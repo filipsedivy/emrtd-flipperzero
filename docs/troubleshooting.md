@@ -1,5 +1,34 @@
 # When it does not work
 
+## The application will not start
+
+```
+App Too Old: APP:87 < FW:88
+```
+
+The launcher is comparing the API version the package was built against with
+the one the firmware provides, and refusing the mismatch. Nothing is wrong with
+the application: the package was simply built for a different Flipper firmware
+than the one on the device. `APP:87` is the official firmware and `APP:88` is
+Unleashed or Momentum.
+
+Take the package whose name matches your firmware from the release, or build
+one:
+
+```bash
+ufbt update --index-url https://up.unleashedflip.com/directory.json   # Unleashed
+ufbt update --index-url https://up.momentum-fw.dev/firmware/directory.json
+ufbt update --channel=release                                          # official
+ufbt launch
+```
+
+The sources are identical for all of them, and so is the mbed TLS
+configuration these firmwares ship, so the reader behaves the same on each.
+
+The mirror image, `App Too New`, means the opposite: a package built against a
+newer API than the firmware. Update the firmware, or rebuild against the SDK
+that matches it.
+
 ## The errors, one by one
 
 | What the screen says | What happened | What to try |

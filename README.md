@@ -77,22 +77,62 @@ nothing more.
 
 ## Install
 
+### Which firmware
+
+A package carries the API version it was built against, and the launcher
+refuses one that does not match. That is what
+
+```
+App Too Old: APP:87 < FW:88
+```
+
+means: the package was built for the official firmware and put on Unleashed.
+It is not a version of the application that is too old, only a package built
+for the wrong Flipper.
+
+The sources are the same for all of them - the application needs no change,
+and the mbed TLS configuration these firmwares ship is byte for byte identical,
+so PACE behaves the same on each. Only the SDK the package is built against
+differs. Every release carries one file per firmware; take the one whose name
+matches yours.
+
 ### With ufbt
 
 ```bash
 pip install --upgrade ufbt
-ufbt update --channel=release      # firmware 1.4.3, API 87.1
 git clone https://github.com/filipsedivy/emrtd-flipperzero.git
 cd emrtd-flipperzero
+```
+
+Then deploy the SDK for the firmware on your device:
+
+```bash
+# Official firmware
+ufbt update --channel=release
+
+# Unleashed
+ufbt update --index-url https://up.unleashedflip.com/directory.json
+
+# Momentum
+ufbt update --index-url https://up.momentum-fw.dev/firmware/directory.json
+```
+
+and build:
+
+```bash
 ufbt launch                        # build, upload and start on a connected Flipper
 ```
 
-`ufbt` alone builds `dist/emrtd.fap`, which can be copied to
-`/ext/apps/NFC/` on the SD card instead.
+`ufbt` alone builds `dist/emrtd.fap`, which can be copied to `/ext/apps/NFC/`
+on the SD card instead.
 
-The application is built against the **release** channel. It uses the
-firmware's own mbed TLS, so a build for one API version will not load on
-another.
+`ufbt update` replaces whichever SDK was deployed before. To keep more than
+one, point `UFBT_HOME` somewhere else for each:
+
+```bash
+UFBT_HOME=~/.ufbt-unleashed ufbt update --index-url https://up.unleashedflip.com/directory.json
+UFBT_HOME=~/.ufbt-unleashed ufbt
+```
 
 ### From the app catalogue
 
