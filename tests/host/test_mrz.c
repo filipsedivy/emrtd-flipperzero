@@ -35,15 +35,33 @@ static const char* const td1_extended = "I<UTOD23145890<7349<<<<<<<<<<<"
                                         "7408122F1204159UTO<<<<<<<<<<<6"
                                         "ERIKSSON<<ANNA<MARIA<<<<<<<<<<";
 
+/*
+ * Copy a value into one of the fixed credential fields, always terminated.
+ *
+ * strncpy() with a bound of exactly the field size minus one is correct here
+ * only because the structure was cleared first, and GCC rightly refuses to
+ * take that on trust when the value is as long as the bound - a date is
+ * exactly six characters in a seven byte field. Saying what is meant is
+ * shorter than explaining it.
+ */
+static void credentials_field_set(char* field, size_t size, const char* value) {
+    const size_t len = strlen(value);
+    const size_t copied = len < size ? len : size - 1;
+    memcpy(field, value, copied);
+    field[copied] = '\0';
+}
+
 static void credentials_set(
     EmrtdCredentials* credentials,
     const char* number,
     const char* birth,
     const char* expiry) {
     memset(credentials, 0, sizeof(*credentials));
-    strncpy(credentials->document_number, number, sizeof(credentials->document_number) - 1);
-    strncpy(credentials->date_of_birth, birth, sizeof(credentials->date_of_birth) - 1);
-    strncpy(credentials->date_of_expiry, expiry, sizeof(credentials->date_of_expiry) - 1);
+    credentials_field_set(
+        credentials->document_number, sizeof(credentials->document_number), number);
+    credentials_field_set(credentials->date_of_birth, sizeof(credentials->date_of_birth), birth);
+    credentials_field_set(
+        credentials->date_of_expiry, sizeof(credentials->date_of_expiry), expiry);
 }
 
 static void test_char_values(void) {
@@ -150,8 +168,9 @@ static void test_mrz_information_refusals(void) {
     /* The field is not terminated, so it cannot be read as a string. */
     memset(&credentials, 0, sizeof(credentials));
     memset(credentials.document_number, 'A', sizeof(credentials.document_number));
-    strncpy(credentials.date_of_birth, "690806", sizeof(credentials.date_of_birth) - 1);
-    strncpy(credentials.date_of_expiry, "940623", sizeof(credentials.date_of_expiry) - 1);
+    credentials_field_set(credentials.date_of_birth, sizeof(credentials.date_of_birth), "690806");
+    credentials_field_set(
+        credentials.date_of_expiry, sizeof(credentials.date_of_expiry), "940623");
     TEST_EQ_INT(emrtd_mrz_information(&credentials, out, sizeof(out)), EmrtdErrorInvalidInput);
 }
 
@@ -259,11 +278,12 @@ static void test_parse_td1_and_td2(void) {
     EmrtdCredentials credentials;
     char info[EMRTD_MRZ_INFO_MAX];
     memset(&credentials, 0, sizeof(credentials));
-    strncpy(
-        credentials.document_number, mrz.document_number, sizeof(credentials.document_number) - 1);
-    strncpy(credentials.date_of_birth, mrz.date_of_birth, sizeof(credentials.date_of_birth) - 1);
-    strncpy(
-        credentials.date_of_expiry, mrz.date_of_expiry, sizeof(credentials.date_of_expiry) - 1);
+    credentials_field_set(
+        credentials.document_number, sizeof(credentials.document_number), mrz.document_number);
+    credentials_field_set(
+        credentials.date_of_birth, sizeof(credentials.date_of_birth), mrz.date_of_birth);
+    credentials_field_set(
+        credentials.date_of_expiry, sizeof(credentials.date_of_expiry), mrz.date_of_expiry);
     TEST_EQ_INT(emrtd_mrz_information(&credentials, info, sizeof(info)), EmrtdErrorNone);
     TEST_EQ_STR(info, "D23145890734974081221204159");
 }
