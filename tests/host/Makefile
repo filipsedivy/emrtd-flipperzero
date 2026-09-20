@@ -103,7 +103,7 @@ endif
 
 BIN := $(BUILD_DIR)/emrtd_tests
 
-.PHONY: test build clean distclean deps config-drift
+.PHONY: test build clean distclean deps config-drift gcc-check
 
 # Both entry points fetch the dependency first and then re-enter, because a
 # pattern rule only matches when its prerequisite already exists. On a fresh
@@ -175,6 +175,38 @@ config-drift:
 		fi; \
 		echo "no ufbt SDK deployed, skipping the drift check"; \
 	fi
+
+# A second opinion from GCC.
+#
+# Continuous integration compiles this suite with GCC; a developer on macOS
+# compiles it with clang, and the two do not warn about the same things. GCC's
+# -Wstringop-truncation, for one, has no clang equivalent, so a truncating
+# strncpy passes locally and fails the build on push.
+#
+# There is no host GCC here, but the Flipper toolchain ships a real one for
+# ARM, and a warning from the middle end does not care what it is generating
+# code for. This compiles every translation unit with it, discards the object,
+# and reports what only GCC would have said. It is not a substitute for the
+# real build - it cannot link or run - but it catches the class of failure
+# that otherwise only appears in CI.
+GCC_CHECK ?= $(HOME)/.ufbt/toolchain/current/bin/arm-none-eabi-gcc
+
+gcc-check: deps
+	@if [ ! -x "$(GCC_CHECK)" ]; then \
+		echo "no GCC at $(GCC_CHECK); run ufbt once to deploy the toolchain,"; \
+		echo "or pass GCC_CHECK=<path to a gcc>."; \
+		exit 1; \
+	fi
+	@echo "checking $(words $(APP_SRC) $(TEST_SRC)) files with $$($(GCC_CHECK) -dumpversion)"
+	@fail=0; \
+	for f in $(APP_SRC) $(TEST_SRC); do \
+		if ! $(GCC_CHECK) -c -o /dev/null -O1 $(CFLAGS) -Werror "$$f" 2>/tmp/emrtd-gcc-check.log; then \
+			echo "--- $$f"; cat /tmp/emrtd-gcc-check.log; fail=1; \
+		fi; \
+	done; \
+	rm -f /tmp/emrtd-gcc-check.log; \
+	if [ $$fail -ne 0 ]; then exit 1; fi; \
+	echo "GCC is happy with all of them"
 
 clean:
 	rm -rf $(BUILD_DIR)

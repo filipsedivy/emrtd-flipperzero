@@ -153,6 +153,7 @@ ships, configured with the firmware's own header:
 
 ```bash
 make -C tests/host test
+make -C tests/host gcc-check   # GCC-only warnings, which clang does not raise
 ```
 
 The first run clones mbed TLS 3.6.2 into `tests/host/.deps`. The suite builds

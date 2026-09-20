@@ -156,6 +156,20 @@ The suite that reaches furthest is `test_session.c`: it drives a simulated
 chip through the transceiver port, from choosing an access driver to parsing
 EF.SOD, in full frames and in ninety-six byte ones.
 
+### A second opinion from GCC
+
+Continuous integration compiles the suite with GCC and a developer on macOS
+compiles it with clang, and the two do not warn about the same things.
+`-Wstringop-truncation` has no clang equivalent at all, so a `strncpy` that
+drops its terminator passes locally and fails the build on push.
+
+`make -C tests/host gcc-check` closes that gap. There is no host GCC on a Mac,
+but the Flipper toolchain ships a real one for ARM, and a warning from the
+middle end does not care what architecture it is generating code for. The
+target compiles every translation unit with it and throws the objects away. It
+cannot link or run anything, so it is no substitute for the real build - it
+exists to catch the one class of failure that otherwise only appears in CI.
+
 ### What the suite does not cover
 
 `test_session.c` drives its own read loop, not `worker/emrtd_worker.c`. The
