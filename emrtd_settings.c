@@ -1,0 +1,274 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Filip Sedivy
+ *
+ * Remembering the credentials and the options between runs.
+ *
+ * The file this writes holds the three values that open an electronic
+ * passport, which is to say the key to someone's identity document. It is
+ * stored in the clear, because the Flipper has nowhere to keep a secret that
+ * the person holding it could not read anyway, so the file says what it is in
+ * its header and the user can delete it from the Document scene at any time.
+ *
+ * Nothing read back from the file is trusted: a hand edited or truncated file
+ * must leave the application in the same state as no file at all.
+ */
+#include "emrtd_i.h"
+
+#include <lib/flipper_format/flipper_format.h>
+
+#include "access/emrtd_access.h"
+
+#define TAG "EmrtdSettings"
+
+#define EMRTD_SETTINGS_HEADER  "eMRTD reader settings"
+#define EMRTD_SETTINGS_VERSION (1)
+
+#define EMRTD_KEY_DOC_NUMBER "Document Number"
+#define EMRTD_KEY_BIRTH      "Date of Birth"
+#define EMRTD_KEY_EXPIRY     "Date of Expiry"
+#define EMRTD_KEY_CAN        "Card Access Number"
+#define EMRTD_KEY_REMEMBER   "Remember Credentials"
+#define EMRTD_KEY_METHOD     "Access Method"
+#define EMRTD_KEY_FILES      "Data Groups"
+#define EMRTD_KEY_EXPORT     "Export To SD"
+#define EMRTD_KEY_TRACE      "Write Trace"
+
+/** The MRZ alphabet of ICAO 9303-3, section 4.2.2. */
+static bool emrtd_settings_is_mrz_string(const char* text) {
+    for(const char* c = text; *c != '\0'; c++) {
+        bool ok = (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || (*c == '<');
+        if(!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool emrtd_settings_is_digits(const char* text, size_t expected_len) {
+    if(strlen(text) != expected_len) {
+        return false;
+    }
+    for(size_t i = 0; i < expected_len; i++) {
+        if(text[i] < '0' || text[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Read one string key into a fixed field.
+ *
+ * Every key is optional and the file may list them in any order, so the
+ * format is rewound before each lookup. A value that does not fit the field
+ * or is not of the expected shape is dropped rather than truncated: half a
+ * document number would fail authentication with no hint as to why.
+ */
+static bool emrtd_settings_read_field(
+    FlipperFormat* file,
+    FuriString* scratch,
+    const char* key,
+    char* out,
+    size_t out_size) {
+    if(!flipper_format_rewind(file)) {
+        return false;
+    }
+    if(!flipper_format_read_string(file, key, scratch)) {
+        return false;
+    }
+
+    const char* value = furi_string_get_cstr(scratch);
+    if(furi_string_size(scratch) >= out_size) {
+        FURI_LOG_W(TAG, "%s does not fit, ignored", key);
+        return false;
+    }
+
+    strlcpy(out, value, out_size);
+    return true;
+}
+
+static bool emrtd_settings_read_bool(FlipperFormat* file, const char* key, bool* out) {
+    if(!flipper_format_rewind(file)) {
+        return false;
+    }
+    return flipper_format_read_bool(file, key, out, 1);
+}
+
+static bool emrtd_settings_read_uint32(FlipperFormat* file, const char* key, uint32_t* out) {
+    if(!flipper_format_rewind(file)) {
+        return false;
+    }
+    return flipper_format_read_uint32(file, key, out, 1);
+}
+
+bool emrtd_settings_load(Emrtd* app) {
+    furi_assert(app);
+
+    FlipperFormat* file = flipper_format_file_alloc(app->storage);
+    FuriString* scratch = furi_string_alloc();
+    EmrtdCredentials* credentials = &app->config.credentials;
+    bool loaded = false;
+
+    do {
+        if(!flipper_format_file_open_existing(file, EMRTD_SETTINGS_PATH)) {
+            break;
+        }
+
+        uint32_t version = 0;
+        if(!flipper_format_read_header(file, scratch, &version)) {
+            break;
+        }
+        if(!furi_string_equal_str(scratch, EMRTD_SETTINGS_HEADER) ||
+           version != EMRTD_SETTINGS_VERSION) {
+            FURI_LOG_W(TAG, "Settings file is not ours, or is a later version");
+            break;
+        }
+
+        char buffer[EMRTD_DOC_NUMBER_MAX + 1];
+
+        if(emrtd_settings_read_field(file, scratch, EMRTD_KEY_DOC_NUMBER, buffer, sizeof(buffer)) &&
+           emrtd_settings_is_mrz_string(buffer)) {
+            strlcpy(credentials->document_number, buffer, sizeof(credentials->document_number));
+        }
+
+        if(emrtd_settings_read_field(file, scratch, EMRTD_KEY_BIRTH, buffer, sizeof(buffer)) &&
+           emrtd_settings_is_digits(buffer, EMRTD_DATE_LEN)) {
+            strlcpy(credentials->date_of_birth, buffer, sizeof(credentials->date_of_birth));
+        }
+
+        if(emrtd_settings_read_field(file, scratch, EMRTD_KEY_EXPIRY, buffer, sizeof(buffer)) &&
+           emrtd_settings_is_digits(buffer, EMRTD_DATE_LEN)) {
+            strlcpy(credentials->date_of_expiry, buffer, sizeof(credentials->date_of_expiry));
+        }
+
+        if(emrtd_settings_read_field(file, scratch, EMRTD_KEY_CAN, buffer, sizeof(buffer)) &&
+           emrtd_settings_is_digits(buffer, EMRTD_CAN_MAX)) {
+            strlcpy(credentials->can, buffer, sizeof(credentials->can));
+            credentials->has_can = true;
+        }
+
+        emrtd_settings_read_bool(file, EMRTD_KEY_REMEMBER, &app->remember_credentials);
+        emrtd_settings_read_bool(file, EMRTD_KEY_EXPORT, &app->config.export_to_sd);
+        emrtd_settings_read_bool(file, EMRTD_KEY_TRACE, &app->config.write_trace);
+
+        uint32_t number = 0;
+        if(emrtd_settings_read_uint32(file, EMRTD_KEY_METHOD, &number) &&
+           number <= EmrtdAccessMethodBac) {
+            app->config.method = (EmrtdAccessMethod)number;
+        }
+
+        if(emrtd_settings_read_uint32(file, EMRTD_KEY_FILES, &number)) {
+            /* EF.COM and EF.SOD are not optional; the reader needs both. */
+            app->config.files = (EmrtdFileMask)number | EMRTD_FILE_BIT(EmrtdFileCom) |
+                                EMRTD_FILE_BIT(EmrtdFileSod);
+        }
+
+        loaded = true;
+    } while(false);
+
+    furi_string_free(scratch);
+    flipper_format_free(file);
+
+    return loaded;
+}
+
+bool emrtd_settings_save(Emrtd* app) {
+    furi_assert(app);
+
+    /*
+     * The settings live beside the exports, in a directory the application is
+     * free to create; nothing else does it for us, because the path is
+     * spelled out rather than resolved through APP_DATA_PATH.
+     */
+    if(!storage_dir_exists(app->storage, EMRTD_EXPORT_DIR)) {
+        storage_simply_mkdir(app->storage, EMRTD_EXPORT_DIR);
+    }
+
+    FlipperFormat* file = flipper_format_file_alloc(app->storage);
+    const EmrtdCredentials* credentials = &app->config.credentials;
+    bool saved = false;
+
+    do {
+        if(!flipper_format_file_open_always(file, EMRTD_SETTINGS_PATH)) {
+            FURI_LOG_E(TAG, "Cannot write " EMRTD_SETTINGS_PATH);
+            break;
+        }
+        if(!flipper_format_write_header_cstr(file, EMRTD_SETTINGS_HEADER, EMRTD_SETTINGS_VERSION)) {
+            break;
+        }
+        if(!flipper_format_write_comment_cstr(
+               file, "These values unlock an electronic travel document. Keep or delete them")) {
+            break;
+        }
+        if(!flipper_format_write_comment_cstr(
+               file, "as you would the document itself: Document - Forget stored data.")) {
+            break;
+        }
+
+        if(app->remember_credentials) {
+            if(!flipper_format_write_string_cstr(
+                   file, EMRTD_KEY_DOC_NUMBER, credentials->document_number)) {
+                break;
+            }
+            if(!flipper_format_write_string_cstr(
+                   file, EMRTD_KEY_BIRTH, credentials->date_of_birth)) {
+                break;
+            }
+            if(!flipper_format_write_string_cstr(
+                   file, EMRTD_KEY_EXPIRY, credentials->date_of_expiry)) {
+                break;
+            }
+            if(credentials->has_can && credentials->can[0] != '\0') {
+                if(!flipper_format_write_string_cstr(file, EMRTD_KEY_CAN, credentials->can)) {
+                    break;
+                }
+            }
+        }
+
+        if(!flipper_format_write_bool(file, EMRTD_KEY_REMEMBER, &app->remember_credentials, 1)) {
+            break;
+        }
+
+        const uint32_t method = (uint32_t)app->config.method;
+        if(!flipper_format_write_uint32(file, EMRTD_KEY_METHOD, &method, 1)) {
+            break;
+        }
+
+        const uint32_t files = (uint32_t)app->config.files;
+        if(!flipper_format_write_uint32(file, EMRTD_KEY_FILES, &files, 1)) {
+            break;
+        }
+
+        if(!flipper_format_write_bool(file, EMRTD_KEY_EXPORT, &app->config.export_to_sd, 1)) {
+            break;
+        }
+        if(!flipper_format_write_bool(file, EMRTD_KEY_TRACE, &app->config.write_trace, 1)) {
+            break;
+        }
+
+        saved = true;
+    } while(false);
+
+    flipper_format_free(file);
+
+    return saved;
+}
+
+bool emrtd_settings_delete(Emrtd* app) {
+    furi_assert(app);
+
+    /*
+     * Forgetting has to be true in both places: the file on the card and the
+     * copy in memory. The options are deliberately kept, because they say
+     * nothing about the holder.
+     */
+    bool removed = true;
+    if(storage_file_exists(app->storage, EMRTD_SETTINGS_PATH)) {
+        removed = storage_simply_remove(app->storage, EMRTD_SETTINGS_PATH);
+    }
+
+    memset(&app->config.credentials, 0, sizeof(app->config.credentials));
+
+    return removed;
+}

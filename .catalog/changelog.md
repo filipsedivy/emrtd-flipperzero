@@ -1,0 +1,17 @@
+## 1.0
+- First release
+- PACE with the generic mapping over ECDH, with AES-128, AES-192 and AES-256
+- PACE curves: NIST P-192 to P-256 and brainpoolP192r1 to brainpoolP256r1
+  (parameter ids 8 to 13); anything above 256 bits is refused by name
+- The card access number as an alternative to the machine readable zone
+- BAC with 3DES, chosen automatically when the chip does not announce PACE
+- Secure Messaging for both cipher families, checked against the ICAO Doc 9303
+  test vectors
+- Reads EF.COM, EF.SOD and every non-EAC data group; decodes the machine
+  readable zone, the additional details and the security information
+- Data group hashes checked against the security object, reported per file
+- The facial image streamed out of DG2 to the SD card, so a forty kilobyte
+  group never has to fit in memory
+- Export directory per read: the raw files, the decoded zone, the image, a
+  report, and an optional APDU trace
+- Credentials can be remembered between reads, and forgotten on request

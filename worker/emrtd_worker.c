@@ -1,0 +1,1825 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Filip Sedivy
+ */
+
+#include "emrtd_worker.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include <furi.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/sha256.h>
+#include <nfc/nfc.h>
+#include <nfc/nfc_poller.h>
+#include <nfc/protocols/iso14443_4a/iso14443_4a_poller.h>
+#include <nfc/protocols/iso14443_4b/iso14443_4b_poller.h>
+
+#include "../crypto/emrtd_crypto.h"
+#include "../crypto/emrtd_sm.h"
+#include "../emrtd.h"
+#include "../protocol/emrtd_apdu.h"
+#include "../protocol/emrtd_tlv.h"
+#include "../transport/emrtd_iso14443_4.h"
+#include "emrtd_export.h"
+
+#define TAG "EmrtdWorker"
+
+/** Room for one command and one response, envelope included. */
+#define EMRTD_WORKER_APDU_BUFFER_SIZE 512
+
+/**
+ * How much of DG2 is held back while the image is located.
+ *
+ * The facial image sits behind the biometric information template and the
+ * ISO/IEC 19794-5 facial record header, which together run to about a hundred
+ * bytes. Half a kilobyte is comfortably more than that and is the only part of
+ * the file that is ever in memory.
+ */
+#define EMRTD_WORKER_DG2_LOOKAHEAD 512
+
+/** EF.CardAccess is a short SET OF SecurityInfo; a kilobyte is generous. */
+#define EMRTD_WORKER_CARD_ACCESS_MAX 1024
+
+/** Largest offset that fits the P1-P2 field of READ BINARY (ISO 7816-4). */
+#define EMRTD_WORKER_SHORT_OFFSET_MAX 0x7FFF
+
+/** Largest offset the odd instruction form encodes here, in two bytes. */
+#define EMRTD_WORKER_LONG_OFFSET_MAX 0xFFFF
+
+/** Sanity bound on a file, so a malformed length cannot spin the reader. */
+#define EMRTD_WORKER_FILE_SIZE_MAX (64u * 1024u)
+
+/**
+ * Consecutive activation failures before the document is declared gone.
+ *
+ * Both ISO 14443-3 pollers wait 100 ms after a failed activation, so this is
+ * about two seconds - long enough for a hand to settle the document back onto
+ * the reader, short enough not to look like a hang.
+ */
+#define EMRTD_WORKER_ACTIVATION_RETRIES 20
+
+/** How long one turn of the wait for the read to finish lasts. */
+#define EMRTD_WORKER_WAIT_SLICE_MS 100
+
+/** Pause between two rounds of protocol detection. */
+#define EMRTD_WORKER_DETECT_PAUSE_MS 20
+
+/**
+ * Stack for the control thread.
+ *
+ * Detection allocates and frees a poller on this thread, and that reaches the
+ * NFC hardware abstraction layer; the firmware's own scanner gives the same
+ * path four kilobytes.
+ */
+#define EMRTD_WORKER_STACK_SIZE (3u * 1024u)
+
+/** Set from the poller callback once the read has finished, one way or another. */
+#define EMRTD_WORKER_FLAG_FINISHED (1UL << 0)
+
+/** Percentage of the whole read given to fetching the files. */
+#define EMRTD_WORKER_FILES_PERCENT 65u
+/** Percentage already spent by the time the first file is selected. */
+#define EMRTD_WORKER_FILES_BASE    25u
+
+/**
+ * EF.CardAccess is not part of the eMRTD application's catalogue - it lives in
+ * the master file and is readable without any authentication - so it has no
+ * entry in emrtd_files.c. The export only ever looks at @c name, which is why
+ * an entry made up here is enough to give it a file of its own.
+ */
+static const EmrtdFileInfo emrtd_worker_card_access_info = {
+    .id = EmrtdFileCount,
+    .fid = EMRTD_FID_CARD_ACCESS,
+    .sfi = 0x1C,
+    .tag = 0x00,
+    .dg_number = -1,
+    .eac_protected = false,
+    .name = "EF.CardAccess",
+    .label = "Card access",
+    .description = "How the chip wants to be opened",
+};
+
+/** A running hash over one file, for the passive authentication check. */
+typedef struct {
+    bool active;
+    bool sha256;
+    mbedtls_sha1_context sha1;
+    mbedtls_sha256_context sha2;
+} EmrtdWorkerDigest;
+
+struct EmrtdWorker {
+    EmrtdWorkerConfig config;
+    EmrtdWorkerCallback callback;
+    void* callback_context;
+    EmrtdReadResult result;
+
+    Nfc* nfc;
+    NfcPoller* poller;
+
+    FuriThread* thread;
+    FuriEventFlag* events;
+    volatile bool stop_requested;
+    bool running;
+
+    EmrtdIso14443_4* transport;
+    EmrtdTransceiver* transceiver;
+    EmrtdSm sm;
+    bool sm_active;
+
+    EmrtdExport* export_ctx;
+
+    uint8_t* command; /**< The serialised command APDU. */
+    uint8_t* response; /**< The response, unprotected in place. */
+    uint8_t* lookahead; /**< The head of DG2, until the image is located. */
+
+    EmrtdWorkerDigest digest;
+    uint8_t digest_value[64];
+
+    const char* driver_name; /**< Static, owned by the access driver registry. */
+    size_t files_total;
+    size_t files_done;
+    uint8_t activation_failures;
+};
+
+/* --- Stage names -------------------------------------------------------- */
+
+const char* emrtd_worker_stage_text(EmrtdWorkerStage stage) {
+    switch(stage) {
+    case EmrtdWorkerStageIdle:
+        return "Idle";
+    case EmrtdWorkerStageWaitingForCard:
+        return "Hold the document";
+    case EmrtdWorkerStageSelectingApplication:
+        return "Opening document";
+    case EmrtdWorkerStageReadingCardAccess:
+        return "Reading card access";
+    case EmrtdWorkerStageAuthenticating:
+        return "Authenticating";
+    case EmrtdWorkerStageReadingFile:
+        return "Reading";
+    case EmrtdWorkerStageVerifying:
+        return "Verifying";
+    case EmrtdWorkerStageExporting:
+        return "Saving";
+    case EmrtdWorkerStageDone:
+        return "Done";
+    case EmrtdWorkerStageError:
+        return "Failed";
+    default:
+        return "";
+    }
+}
+
+/* --- Progress ----------------------------------------------------------- */
+
+/**
+ * Tell the caller where the read has got to.
+ *
+ * Runs on the NFC thread. Once a stop has been asked for the callback is not
+ * invoked again: the caller is on its way into emrtd_worker_stop(), and a
+ * callback that posts to a queue nobody is draining would deadlock the two
+ * threads against each other.
+ *
+ * @return false when the read should be abandoned
+ */
+static bool emrtd_worker_report(
+    EmrtdWorker* worker,
+    EmrtdWorkerStage stage,
+    EmrtdFileId file,
+    size_t bytes_done,
+    size_t bytes_total,
+    uint8_t percent,
+    const char* detail) {
+    if(worker->stop_requested) {
+        return false;
+    }
+    if(worker->callback == NULL) {
+        return true;
+    }
+
+    const EmrtdWorkerProgress progress = {
+        .stage = stage,
+        .file = file,
+        .bytes_done = bytes_done,
+        .bytes_total = bytes_total,
+        .percent = percent > 100 ? 100 : percent,
+        .detail = detail,
+    };
+
+    if(!worker->callback(&progress, worker->callback_context)) {
+        FURI_LOG_I(TAG, "Aborted by the caller");
+        worker->stop_requested = true;
+        return false;
+    }
+    return true;
+}
+
+static uint8_t emrtd_worker_file_percent(const EmrtdWorker* worker, size_t done, size_t total) {
+    const size_t files = worker->files_total > 0 ? worker->files_total : 1;
+    const size_t span = EMRTD_WORKER_FILES_PERCENT / files;
+
+    size_t value = (EMRTD_WORKER_FILES_PERCENT * worker->files_done) / files;
+    if(total > 0 && done < total) {
+        value += (span * done) / total;
+    } else if(total > 0) {
+        value += span;
+    }
+
+    value += EMRTD_WORKER_FILES_BASE;
+    return value > 90 ? 90 : (uint8_t)value;
+}
+
+/* --- The diagnostic trace ----------------------------------------------- */
+
+static void emrtd_worker_trace(void* context, bool outgoing, const uint8_t* data, size_t len) {
+    EmrtdWorker* worker = context;
+    if(worker->export_ctx == NULL) {
+        return;
+    }
+
+    emrtd_export_trace(worker->export_ctx, outgoing ? "> " : "< ", data, len);
+
+    /*
+     * A response always ends with its status word, and that is the one part of
+     * the exchange a person reading the trace can act on, so it is spelled out
+     * rather than left as two hex digits.
+     */
+    if(!outgoing && len >= 2) {
+        const uint16_t sw = (uint16_t)((data[len - 2] << 8) | data[len - 1]);
+        char note[64];
+        snprintf(note, sizeof(note), "  SW %04X %s", sw, emrtd_sw_text(sw));
+        emrtd_export_trace_note(worker->export_ctx, note);
+    }
+}
+
+/* --- The export ---------------------------------------------------------- */
+
+/*
+ * Exporting is optional, and a card that has been pulled out of the reader
+ * matters while a full SD card does not: a storage failure is logged once and
+ * then ignored, and with no export open every one of these does nothing.
+ */
+
+static void emrtd_worker_export_begin(EmrtdWorker* worker, const EmrtdFileInfo* info) {
+    if(worker->export_ctx == NULL) {
+        return;
+    }
+    if(emrtd_export_begin_file(worker->export_ctx, info) != EmrtdErrorNone) {
+        FURI_LOG_W(TAG, "Export of %s could not be opened", info->name);
+    }
+}
+
+static void emrtd_worker_export_write(EmrtdWorker* worker, const uint8_t* data, size_t len) {
+    if(worker->export_ctx == NULL) {
+        return;
+    }
+    if(emrtd_export_write(worker->export_ctx, data, len) != EmrtdErrorNone) {
+        FURI_LOG_W(TAG, "Export write failed; the read continues");
+    }
+}
+
+static void emrtd_worker_export_end(EmrtdWorker* worker) {
+    if(worker->export_ctx != NULL) {
+        emrtd_export_end_file(worker->export_ctx);
+    }
+}
+
+static void emrtd_worker_export_arm_image(EmrtdWorker* worker, size_t offset, const char* suffix) {
+    if(worker->export_ctx != NULL) {
+        emrtd_export_arm_image(worker->export_ctx, offset, suffix);
+    }
+}
+
+/* --- Talking to the chip ------------------------------------------------ */
+
+/**
+ * Largest response plaintext whose frame still fits.
+ *
+ * emrtd_transceiver_max_le() sizes the answer from FSD, which counts the whole
+ * frame; this trims the ISO 14443-4 prologue and CRC off that budget as well,
+ * because the firmware pollers hold PCB || INF || CRC in fixed buffers and
+ * overflowing one of them aborts the application instead of failing.
+ */
+static size_t emrtd_worker_frame_limit(size_t block) {
+    if(block == 0) {
+        /* Without Secure Messaging the data and the status word share the field. */
+        return EMRTD_ISO14443_4_MAX_INF - 2;
+    }
+
+    /* DO'87' tag, two length bytes and the padding indicator, DO'99', DO'8E', SW. */
+    const size_t envelope = 4 + 4 + 10 + 2;
+    if(EMRTD_ISO14443_4_MAX_INF <= envelope + block) {
+        return 0;
+    }
+
+    size_t cipher = EMRTD_ISO14443_4_MAX_INF - envelope;
+    cipher -= cipher % block;
+    /* ISO 9797-1 method 2 always adds at least the 0x80 byte. */
+    return cipher - 1;
+}
+
+static size_t emrtd_worker_chunk_size(const EmrtdWorker* worker) {
+    const size_t block = worker->sm_active ? emrtd_cipher_block_size(worker->sm.cipher) : 0;
+
+    size_t le = emrtd_transceiver_max_le(worker->transceiver, block);
+    const size_t limit = emrtd_worker_frame_limit(block);
+
+    if(limit > 0 && (le == 0 || le > limit)) {
+        le = limit;
+    }
+    if(le == 0) {
+        le = 16;
+    }
+    return le;
+}
+
+/**
+ * Exchange one APDU, through Secure Messaging once a session exists.
+ *
+ * ICAO 9303-11 9.8: the Send Sequence Counter advances once for the command
+ * and once for the response, so an exchange that is protected on the way out
+ * must be unprotected on the way back or the two sides lose step.
+ */
+static EmrtdError emrtd_worker_transmit(
+    EmrtdWorker* worker,
+    const EmrtdCommandApdu* command,
+    EmrtdResponseApdu* out) {
+    size_t tx_len = 0;
+    EmrtdError error;
+
+    if(worker->sm_active) {
+        error = emrtd_sm_protect(
+            &worker->sm, command, worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE, &tx_len);
+    } else {
+        error =
+            emrtd_apdu_encode(command, worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE, &tx_len);
+    }
+    if(error != EmrtdErrorNone) {
+        return error;
+    }
+
+    size_t rx_len = 0;
+    error = emrtd_transceiver_exchange(
+        worker->transceiver,
+        worker->command,
+        tx_len,
+        worker->response,
+        EMRTD_WORKER_APDU_BUFFER_SIZE,
+        &rx_len);
+    if(error != EmrtdErrorNone) {
+        return error;
+    }
+
+    if(!worker->sm_active) {
+        return emrtd_apdu_decode(worker->response, rx_len, out);
+    }
+
+    /*
+     * Once the session exists, every answer the chip gives is wrapped - the
+     * status word included, in DO'99'. A bare two byte reply therefore is not
+     * an answer to the command at all: it is the chip reporting that Secure
+     * Messaging has ended (ICAO 9303-11 section 9.8.8 gives 69 87 and 69 88
+     * for exactly this, and sends them unprotected because there is no longer
+     * a key to protect them with).
+     *
+     * Nothing in such a reply is authenticated, so none of it may be believed.
+     * Reading it as an ordinary status word would let anything in the field
+     * answer a protected READ BINARY with 90 00 and have the file recorded as
+     * read - empty, unverified, and indistinguishable from a real one. The
+     * status word is kept for the trace, where it is useful, and the caller is
+     * told the session is gone.
+     */
+    if(rx_len == 2) {
+        const uint16_t bare_sw = (uint16_t)((worker->response[0] << 8) | worker->response[1]);
+        FURI_LOG_W(TAG, "Session lost, chip answered %04X unprotected", bare_sw);
+        if(worker->export_ctx != NULL) {
+            char note[80];
+            snprintf(
+                note,
+                sizeof(note),
+                "  (unprotected %04X - secure messaging ended: %s)",
+                bare_sw,
+                emrtd_sw_text(bare_sw));
+            emrtd_export_trace_note(worker->export_ctx, note);
+        }
+        worker->sm_active = false;
+        emrtd_sm_clear(&worker->sm);
+        return EmrtdErrorSecureMessaging;
+    }
+
+    return emrtd_sm_unprotect(
+        &worker->sm,
+        worker->response,
+        rx_len,
+        worker->response,
+        EMRTD_WORKER_APDU_BUFFER_SIZE,
+        out);
+}
+
+static EmrtdError emrtd_worker_select_application(EmrtdWorker* worker, uint16_t* out_sw) {
+    EmrtdCommandApdu command;
+    emrtd_apdu_select_application(&command, EMRTD_AID, sizeof(EMRTD_AID));
+
+    EmrtdResponseApdu response;
+    const EmrtdError error = emrtd_worker_transmit(worker, &command, &response);
+    if(error != EmrtdErrorNone) {
+        return error;
+    }
+
+    *out_sw = response.sw;
+    return EmrtdErrorNone;
+}
+
+static EmrtdError
+    emrtd_worker_select_file(EmrtdWorker* worker, const EmrtdFileInfo* info, uint16_t* out_sw) {
+    uint8_t fid[2];
+    emrtd_file_fid_bytes(info, fid);
+
+    EmrtdCommandApdu command;
+    emrtd_apdu_select_file(&command, fid);
+
+    EmrtdResponseApdu response;
+    const EmrtdError error = emrtd_worker_transmit(worker, &command, &response);
+    if(error != EmrtdErrorNone) {
+        return error;
+    }
+
+    *out_sw = response.sw;
+    return EmrtdErrorNone;
+}
+
+/** 9000, and the warnings of ISO 7816-4 table 6, all come back with the data. */
+static bool emrtd_worker_sw_has_data(uint16_t sw) {
+    return sw == 0x9000 || (sw & 0xFF00) == 0x6200 || (sw & 0xFF00) == 0x6300;
+}
+
+/**
+ * READ BINARY beyond the reach of P1-P2.
+ *
+ * ISO/IEC 7816-4 section 7.2.3: the odd instruction code carries the offset in
+ * an offset data object '54' and answers inside a discretionary data object
+ * '53'. Data groups above 32 kilobytes - which a high resolution DG2 can be -
+ * cannot be read any other way. Not every chip implements it, and one that
+ * does not simply refuses the command.
+ */
+static EmrtdError emrtd_worker_read_binary_long(
+    EmrtdWorker* worker,
+    size_t offset,
+    size_t length,
+    EmrtdResponseApdu* out) {
+    if(offset > EMRTD_WORKER_LONG_OFFSET_MAX) {
+        return EmrtdErrorUnsupported;
+    }
+
+    const uint8_t body[4] = {
+        0x54,
+        0x02,
+        (uint8_t)(offset >> 8),
+        (uint8_t)(offset & 0xFF),
+    };
+
+    const EmrtdCommandApdu command = {
+        .cla = 0x00,
+        .ins = 0xB1,
+        .p1 = 0x00,
+        .p2 = 0x00,
+        .data = body,
+        .data_len = sizeof(body),
+        .le = (int)length,
+    };
+
+    const EmrtdError error = emrtd_worker_transmit(worker, &command, out);
+    if(error != EmrtdErrorNone) {
+        return error;
+    }
+    if(!emrtd_worker_sw_has_data(out->sw) || out->data_len == 0) {
+        return EmrtdErrorNone;
+    }
+
+    EmrtdTlv node;
+    if(!emrtd_tlv_parse_first(out->data, out->data_len, &node) || node.tag != 0x53) {
+        FURI_LOG_W(TAG, "Odd INS response is not a '53' data object");
+        return EmrtdErrorParse;
+    }
+
+    out->data = node.value;
+    out->data_len = node.value_len;
+    return EmrtdErrorNone;
+}
+
+/**
+ * Read @p length bytes at @p offset of the file that is selected.
+ *
+ * A card that dislikes the expected length answers 6CXX with the length it is
+ * willing to give, which ISO 7816-4 says to take and ask again.
+ */
+static EmrtdError emrtd_worker_read_binary(
+    EmrtdWorker* worker,
+    size_t offset,
+    size_t length,
+    EmrtdResponseApdu* out) {
+    if(offset > EMRTD_WORKER_SHORT_OFFSET_MAX) {
+        return emrtd_worker_read_binary_long(worker, offset, length, out);
+    }
+
+    EmrtdCommandApdu command;
+    emrtd_apdu_read_binary(&command, (uint16_t)offset, length);
+
+    EmrtdError error = emrtd_worker_transmit(worker, &command, out);
+    if(error != EmrtdErrorNone) {
+        return error;
+    }
+
+    if((out->sw & 0xFF00) == 0x6C00) {
+        const uint8_t sw2 = (uint8_t)(out->sw & 0xFF);
+        size_t exact = sw2 == 0 ? EMRTD_LE_MAX : sw2;
+
+        /*
+         * The answer still has to fit one frame, whatever the card asks for.
+         * Only one retry is made, so a card that insists on more than the
+         * radio allows fails this file rather than looping.
+         */
+        const size_t safe = emrtd_worker_chunk_size(worker);
+        if(exact > safe) {
+            exact = safe;
+        }
+        FURI_LOG_D(TAG, "Card asked for Le %zu", exact);
+
+        emrtd_apdu_read_binary(&command, (uint16_t)offset, exact);
+        error = emrtd_worker_transmit(worker, &command, out);
+    }
+
+    return error;
+}
+
+/* --- The running hash --------------------------------------------------- */
+
+static void emrtd_worker_digest_start(EmrtdWorker* worker) {
+    EmrtdWorkerDigest* digest = &worker->digest;
+    if(digest->active) {
+        return;
+    }
+
+    /*
+     * The algorithm is the one EF.SOD names, which is why EF.SOD is read
+     * before any data group. Anything other than SHA-1 or SHA-256 is left
+     * unhashed and reported as such rather than checked against the wrong sum.
+     */
+    if(!worker->result.has_sod || !worker->result.sod.digest_supported) {
+        return;
+    }
+
+    if(worker->result.sod.digest_len == 20) {
+        digest->sha256 = false;
+        mbedtls_sha1_init(&digest->sha1);
+        if(mbedtls_sha1_starts(&digest->sha1) != 0) {
+            mbedtls_sha1_free(&digest->sha1);
+            return;
+        }
+    } else if(worker->result.sod.digest_len == 32) {
+        digest->sha256 = true;
+        mbedtls_sha256_init(&digest->sha2);
+        if(mbedtls_sha256_starts(&digest->sha2, 0) != 0) {
+            mbedtls_sha256_free(&digest->sha2);
+            return;
+        }
+    } else {
+        return;
+    }
+
+    digest->active = true;
+}
+
+static void emrtd_worker_digest_update(EmrtdWorker* worker, const uint8_t* data, size_t len) {
+    EmrtdWorkerDigest* digest = &worker->digest;
+    if(!digest->active || len == 0) {
+        return;
+    }
+
+    const int status = digest->sha256 ? mbedtls_sha256_update(&digest->sha2, data, len) :
+                                        mbedtls_sha1_update(&digest->sha1, data, len);
+    if(status != 0) {
+        FURI_LOG_W(TAG, "Digest update failed");
+        if(digest->sha256) {
+            mbedtls_sha256_free(&digest->sha2);
+        } else {
+            mbedtls_sha1_free(&digest->sha1);
+        }
+        digest->active = false;
+    }
+}
+
+/** Finish the hash and release the context. Returns its length, or zero. */
+static size_t emrtd_worker_digest_finish(EmrtdWorker* worker) {
+    EmrtdWorkerDigest* digest = &worker->digest;
+    if(!digest->active) {
+        return 0;
+    }
+
+    size_t len = 0;
+    if(digest->sha256) {
+        if(mbedtls_sha256_finish(&digest->sha2, worker->digest_value) == 0) {
+            len = 32;
+        }
+        mbedtls_sha256_free(&digest->sha2);
+    } else {
+        if(mbedtls_sha1_finish(&digest->sha1, worker->digest_value) == 0) {
+            len = 20;
+        }
+        mbedtls_sha1_free(&digest->sha1);
+    }
+
+    digest->active = false;
+    return len;
+}
+
+static void emrtd_worker_digest_abort(EmrtdWorker* worker) {
+    if(emrtd_worker_digest_finish(worker) > 0) {
+        memset(worker->digest_value, 0, sizeof(worker->digest_value));
+    }
+}
+
+/** Compare what was read against the sum EF.SOD lists for this data group. */
+static void emrtd_worker_check_hash(
+    EmrtdWorker* worker,
+    const EmrtdFileInfo* info,
+    EmrtdFileResult* entry,
+    size_t digest_len) {
+    if(info->dg_number < 0) {
+        /*
+         * EF.COM and EF.SOD carry no hash of their own - EF.SOD is the list -
+         * so there is nothing to check rather than something missing.
+         */
+        entry->hash_state = EmrtdHashStateUnknown;
+        return;
+    }
+    if(!worker->result.has_sod) {
+        entry->hash_state = EmrtdHashStateUnknown;
+        return;
+    }
+    if(!worker->result.sod.digest_supported || digest_len == 0) {
+        entry->hash_state = EmrtdHashStateUnsupportedDigest;
+        return;
+    }
+
+    const EmrtdSodHash* listed = emrtd_lds_sod_hash_for(&worker->result.sod, info->dg_number);
+    if(listed == NULL) {
+        entry->hash_state = EmrtdHashStateNotListed;
+        return;
+    }
+    if(listed->hash_len != digest_len) {
+        entry->hash_state = EmrtdHashStateUnsupportedDigest;
+        return;
+    }
+
+    worker->result.hashes_checked++;
+    if(memcmp(listed->hash, worker->digest_value, digest_len) == 0) {
+        entry->hash_state = EmrtdHashStateMatch;
+        worker->result.hashes_matched++;
+    } else {
+        FURI_LOG_W(TAG, "%s does not match the hash in EF.SOD", info->name);
+        entry->hash_state = EmrtdHashStateMismatch;
+    }
+}
+
+/* --- Reading one file --------------------------------------------------- */
+
+/** How much of a file may be held in memory so that it can be decoded. */
+static size_t emrtd_worker_parse_cap(EmrtdFileId id) {
+    switch(id) {
+    case EmrtdFileSod:
+        /* The security object carries the hashes and the signer's certificate. */
+        return 6 * 1024;
+    case EmrtdFileCom:
+        return 512;
+    case EmrtdFileDg1:
+        return 256;
+    case EmrtdFileDg11:
+    case EmrtdFileDg12:
+    case EmrtdFileDg14:
+    case EmrtdFileDg15:
+        return 2 * 1024;
+    default:
+        /* Everything else, DG2 above all, is streamed and never assembled. */
+        return 0;
+    }
+}
+
+typedef struct {
+    uint8_t* data;
+    size_t capacity;
+    size_t len;
+    bool overflowed;
+} EmrtdWorkerParseBuffer;
+
+/**
+ * Stream the currently selected file to the export, the hash and, when it is
+ * one of the small decodable ones, to a buffer.
+ *
+ * @param[in]  dg2   run the facial image look-ahead over the leading bytes
+ * @param[out] entry updated with the size and the outcome
+ */
+static EmrtdError emrtd_worker_stream_file(
+    EmrtdWorker* worker,
+    const EmrtdFileInfo* info,
+    bool dg2,
+    EmrtdWorkerParseBuffer* parse,
+    EmrtdFileResult* entry) {
+    size_t offset = 0;
+    size_t total = 0;
+    bool sized = false;
+    size_t look_len = 0;
+    bool looking = dg2;
+    EmrtdError error = EmrtdErrorNone;
+
+    emrtd_worker_digest_start(worker);
+
+    while(true) {
+        if(worker->stop_requested) {
+            error = EmrtdErrorCancelled;
+            break;
+        }
+
+        size_t want = emrtd_worker_chunk_size(worker);
+        if(sized) {
+            if(offset >= total) {
+                break;
+            }
+            if(total - offset < want) {
+                want = total - offset;
+            }
+        }
+
+        EmrtdResponseApdu response;
+        error = emrtd_worker_read_binary(worker, offset, want, &response);
+        if(error != EmrtdErrorNone) {
+            break;
+        }
+
+        if(!emrtd_worker_sw_has_data(response.sw)) {
+            /*
+             * Past 32767 the read has had to switch to the odd instruction
+             * form, which not every chip implements. A refusal there means the
+             * rest of the file is out of reach, which is a different thing
+             * from the file having ended, and the report should say so.
+             */
+            if(offset > EMRTD_WORKER_SHORT_OFFSET_MAX) {
+                FURI_LOG_W(TAG, "%s: the chip refuses the long offset form", info->name);
+                error = EmrtdErrorUnsupported;
+                break;
+            }
+            /*
+             * 6B00 is what a chip says when the offset has run past the end of
+             * the file, which after at least one good read just means the file
+             * is finished rather than that anything went wrong.
+             */
+            if(response.sw == 0x6B00 && offset > 0) {
+                break;
+            }
+            error = emrtd_error_from_sw(response.sw);
+            break;
+        }
+        if(response.data_len == 0) {
+            break;
+        }
+
+        size_t len = response.data_len;
+        if(!sized) {
+            /*
+             * Every LDS file is one BER-TLV node, so its header states how
+             * long the whole thing is and the reader knows after one exchange
+             * how much is still to come.
+             */
+            total = emrtd_tlv_total_length(response.data, len);
+            if(total == 0 || total > EMRTD_WORKER_FILE_SIZE_MAX) {
+                FURI_LOG_W(TAG, "%s: cannot size from its header", info->name);
+                total = len;
+            }
+            sized = true;
+            entry->size = total;
+        }
+        if(offset + len > total) {
+            len = total - offset;
+        }
+
+        emrtd_worker_digest_update(worker, response.data, len);
+
+        if(parse != NULL && !parse->overflowed) {
+            if(parse->len + len > parse->capacity) {
+                parse->overflowed = true;
+            } else {
+                memcpy(parse->data + parse->len, response.data, len);
+                parse->len += len;
+            }
+        }
+
+        if(looking) {
+            /*
+             * DG2 is the one file that will not fit in memory, so the image
+             * has to be located before anything is written: the export can only
+             * split out bytes it has not yet seen. Holding the head of the file
+             * back for one or two exchanges is what buys that.
+             */
+            size_t room = EMRTD_WORKER_DG2_LOOKAHEAD - look_len;
+            if(room > len) {
+                room = len;
+            }
+            memcpy(worker->lookahead + look_len, response.data, room);
+            look_len += room;
+
+            EmrtdFaceImage face;
+            const bool found = emrtd_lds_dg2_find_image(worker->lookahead, look_len, &face) &&
+                               face.offset <= look_len;
+            if(found) {
+                worker->result.has_face = true;
+                worker->result.face = face;
+                emrtd_worker_export_arm_image(worker, face.offset, face.suffix);
+            }
+
+            if(found || look_len == EMRTD_WORKER_DG2_LOOKAHEAD || offset + len >= total) {
+                looking = false;
+                emrtd_worker_export_write(worker, worker->lookahead, look_len);
+                look_len = 0;
+                if(room < len) {
+                    emrtd_worker_export_write(worker, response.data + room, len - room);
+                }
+            }
+        } else {
+            emrtd_worker_export_write(worker, response.data, len);
+        }
+
+        offset += len;
+
+        if(!emrtd_worker_report(
+               worker,
+               EmrtdWorkerStageReadingFile,
+               info->id,
+               offset,
+               total,
+               emrtd_worker_file_percent(worker, offset, total),
+               info->label)) {
+            error = EmrtdErrorCancelled;
+            break;
+        }
+
+        /* 6282 says the card reached the end of the file before filling Le. */
+        if(response.sw == 0x6282) {
+            break;
+        }
+    }
+
+    /* A read that ended early leaves bytes still held back by the look-ahead. */
+    if(look_len > 0) {
+        emrtd_worker_export_write(worker, worker->lookahead, look_len);
+    }
+
+    if(error != EmrtdErrorNone) {
+        emrtd_worker_digest_abort(worker);
+        entry->size = offset;
+        return error;
+    }
+
+    entry->size = offset;
+    if(worker->result.has_face && dg2 && offset > worker->result.face.offset) {
+        worker->result.face_size = offset - worker->result.face.offset;
+    }
+
+    const size_t digest_len = emrtd_worker_digest_finish(worker);
+    emrtd_worker_check_hash(worker, info, entry, digest_len);
+    memset(worker->digest_value, 0, sizeof(worker->digest_value));
+
+    return EmrtdErrorNone;
+}
+
+/** Decode a file that was small enough to keep, and record what it held. */
+static EmrtdError
+    emrtd_worker_parse_file(EmrtdWorker* worker, EmrtdFileId id, const uint8_t* data, size_t len) {
+    EmrtdReadResult* result = &worker->result;
+
+    switch(id) {
+    case EmrtdFileCom: {
+        const EmrtdError error = emrtd_lds_parse_com(data, len, &result->com);
+        result->has_com = error == EmrtdErrorNone;
+        return error;
+    }
+    case EmrtdFileSod: {
+        const EmrtdError error = emrtd_lds_parse_sod(data, len, &result->sod);
+        result->has_sod = error == EmrtdErrorNone;
+        return error;
+    }
+    case EmrtdFileDg1: {
+        const EmrtdError error = emrtd_lds_parse_dg1(data, len, &result->mrz);
+        result->has_mrz = error == EmrtdErrorNone;
+        return error;
+    }
+    case EmrtdFileDg11: {
+        const EmrtdError error = emrtd_lds_parse_dg11(data, len, &result->dg11);
+        result->has_dg11 = error == EmrtdErrorNone;
+        return error;
+    }
+    case EmrtdFileDg12: {
+        const EmrtdError error = emrtd_lds_parse_dg12(data, len, &result->dg12);
+        result->has_dg12 = error == EmrtdErrorNone;
+        return error;
+    }
+    case EmrtdFileDg14: {
+        /*
+         * DG14 repeats the SecurityInfos under the session. Where the chip let
+         * EF.CardAccess be read first, the two agree and only the flags that
+         * EF.CardAccess does not carry are taken from here.
+         */
+        EmrtdSecurityInfos infos;
+        const EmrtdError error = emrtd_security_infos_parse(data, len, &infos);
+        if(error != EmrtdErrorNone) {
+            return error;
+        }
+        if(!result->card_access_read) {
+            result->security_infos = infos;
+        } else {
+            result->security_infos.has_chip_auth |= infos.has_chip_auth;
+            result->security_infos.has_terminal_auth |= infos.has_terminal_auth;
+            result->security_infos.has_active_auth |= infos.has_active_auth;
+        }
+        return EmrtdErrorNone;
+    }
+    case EmrtdFileDg15: {
+        const EmrtdError error = emrtd_lds_parse_dg15(data, len, &result->dg15);
+        result->has_dg15 = error == EmrtdErrorNone;
+        return error;
+    }
+    default:
+        return EmrtdErrorNone;
+    }
+}
+
+/** Select, stream, decode and score one file. */
+static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
+    const EmrtdFileInfo* info = emrtd_file_info(id);
+    if(info == NULL) {
+        return EmrtdErrorInternal;
+    }
+
+    EmrtdFileResult* entry = &worker->result.files[id];
+    entry->state = EmrtdFileStateReading;
+    entry->hash_state = EmrtdHashStateUnknown;
+    entry->error = EmrtdErrorNone;
+    entry->size = 0;
+
+    if(!emrtd_worker_report(
+           worker,
+           EmrtdWorkerStageReadingFile,
+           id,
+           0,
+           0,
+           emrtd_worker_file_percent(worker, 0, 0),
+           info->label)) {
+        entry->state = EmrtdFileStateFailed;
+        entry->error = EmrtdErrorCancelled;
+        return EmrtdErrorCancelled;
+    }
+
+    uint16_t sw = 0;
+    EmrtdError error = emrtd_worker_select_file(worker, info, &sw);
+    if(error != EmrtdErrorNone) {
+        entry->state = EmrtdFileStateFailed;
+        entry->error = error;
+        return error;
+    }
+    if(sw != 0x9000) {
+        entry->error = emrtd_error_from_sw(sw);
+        entry->state = entry->error == EmrtdErrorFileNotFound ? EmrtdFileStateAbsent :
+                                                                EmrtdFileStateFailed;
+        FURI_LOG_W(TAG, "SELECT %s: %04X", info->name, sw);
+        /* A file that is not there is not a reason to stop reading the rest. */
+        worker->files_done++;
+        return EmrtdErrorNone;
+    }
+
+    emrtd_worker_export_begin(worker, info);
+
+    EmrtdWorkerParseBuffer parse = {0};
+    EmrtdWorkerParseBuffer* parse_ptr = NULL;
+    const size_t cap = emrtd_worker_parse_cap(id);
+    if(cap > 0) {
+        parse.data = malloc(cap);
+        if(parse.data != NULL) {
+            parse.capacity = cap;
+            parse_ptr = &parse;
+        } else {
+            FURI_LOG_W(TAG, "No room to decode %s", info->name);
+        }
+    }
+
+    error = emrtd_worker_stream_file(worker, info, id == EmrtdFileDg2, parse_ptr, entry);
+    emrtd_worker_export_end(worker);
+
+    if(error != EmrtdErrorNone) {
+        entry->state = EmrtdFileStateFailed;
+        entry->error = error;
+    } else if(parse_ptr != NULL && parse.overflowed) {
+        /* Read and exported in full, but too large to decode on this device. */
+        FURI_LOG_W(TAG, "%s is larger than the decode buffer", info->name);
+        entry->state = EmrtdFileStateFailed;
+        entry->error = EmrtdErrorBufferTooSmall;
+    } else {
+        entry->state = EmrtdFileStateRead;
+        if(parse_ptr != NULL && parse.len > 0) {
+            const EmrtdError parse_error =
+                emrtd_worker_parse_file(worker, id, parse.data, parse.len);
+            if(parse_error != EmrtdErrorNone) {
+                FURI_LOG_W(TAG, "%s did not decode", info->name);
+                entry->error = parse_error;
+            }
+        }
+    }
+
+    if(parse.data != NULL) {
+        /* The data groups hold personal details; do not leave them on the heap. */
+        memset(parse.data, 0, parse.capacity);
+        free(parse.data);
+    }
+
+    /* Counted whatever the outcome, so that the progress bar keeps moving. */
+    worker->files_done++;
+    return error;
+}
+
+/* --- EF.CardAccess ------------------------------------------------------ */
+
+/**
+ * Read EF.CardAccess, which lives in the master file and needs no session.
+ *
+ * ICAO 9303-11 9.2: this is the chip stating which access protocols it
+ * supports, and it is the only thing a reader may look at before it has
+ * authenticated. A chip that does not offer it is simply a BAC only document.
+ */
+static size_t
+    emrtd_worker_read_card_access(EmrtdWorker* worker, uint8_t* buffer, size_t capacity) {
+    const EmrtdFileInfo* info = &emrtd_worker_card_access_info;
+
+    uint16_t sw = 0;
+    if(emrtd_worker_select_file(worker, info, &sw) != EmrtdErrorNone || sw != 0x9000) {
+        FURI_LOG_I(TAG, "EF.CardAccess is not available (%04X)", sw);
+        return 0;
+    }
+
+    emrtd_worker_export_begin(worker, info);
+
+    size_t offset = 0;
+    size_t total = 0;
+    bool sized = false;
+
+    while(!worker->stop_requested) {
+        size_t want = emrtd_worker_chunk_size(worker);
+        if(sized) {
+            if(offset >= total) {
+                break;
+            }
+            if(total - offset < want) {
+                want = total - offset;
+            }
+        }
+
+        EmrtdResponseApdu response;
+        if(emrtd_worker_read_binary(worker, offset, want, &response) != EmrtdErrorNone) {
+            break;
+        }
+        if(!emrtd_worker_sw_has_data(response.sw) || response.data_len == 0) {
+            break;
+        }
+
+        size_t len = response.data_len;
+        if(!sized) {
+            total = emrtd_tlv_total_length(response.data, len);
+            if(total == 0 || total > capacity) {
+                total = len < capacity ? len : capacity;
+            }
+            sized = true;
+        }
+        if(offset + len > total) {
+            len = total - offset;
+        }
+        if(len == 0) {
+            break;
+        }
+
+        memcpy(buffer + offset, response.data, len);
+        emrtd_worker_export_write(worker, response.data, len);
+        offset += len;
+
+        if(response.sw == 0x6282) {
+            break;
+        }
+    }
+
+    emrtd_worker_export_end(worker);
+
+    if(offset == 0) {
+        return 0;
+    }
+
+    worker->result.card_access_read = true;
+    if(emrtd_security_infos_parse(buffer, offset, &worker->result.security_infos) !=
+       EmrtdErrorNone) {
+        FURI_LOG_W(TAG, "EF.CardAccess did not parse");
+    }
+    FURI_LOG_I(TAG, "EF.CardAccess: %zu bytes", offset);
+    return offset;
+}
+
+/* --- Access control ----------------------------------------------------- */
+
+/** Try one driver. Leaves a session open in @c worker->sm when it succeeds. */
+static EmrtdError emrtd_worker_try_driver(
+    EmrtdWorker* worker,
+    const EmrtdAccessDriver* driver,
+    const uint8_t* card_access,
+    size_t card_access_len) {
+    FURI_LOG_I(TAG, "Trying %s", driver->name);
+
+    EmrtdSm session;
+    memset(&session, 0, sizeof(session));
+    EmrtdAccessOutcome outcome;
+    memset(&outcome, 0, sizeof(outcome));
+
+    const EmrtdError error = driver->authenticate(
+        worker->transceiver,
+        card_access,
+        card_access_len,
+        &worker->config.credentials,
+        &session,
+        &outcome);
+    if(error != EmrtdErrorNone) {
+        emrtd_sm_clear(&session);
+        FURI_LOG_W(TAG, "%s failed: %s", driver->name, emrtd_error_text(error));
+        return error;
+    }
+
+    worker->sm = session;
+    worker->sm_active = true;
+    memset(&session, 0, sizeof(session));
+
+    if(driver->reselect_application) {
+        /*
+         * PACE leaves the master file selected, so the application has to be
+         * chosen again - this time inside the session (9303-11, 4.4.4). A
+         * session that cannot do even that is no use, so it is torn down and
+         * the caller is free to try the next driver.
+         */
+        uint16_t sw = 0;
+        const EmrtdError reselect = emrtd_worker_select_application(worker, &sw);
+        const EmrtdError failure = reselect != EmrtdErrorNone ? reselect : emrtd_error_from_sw(sw);
+        if(reselect != EmrtdErrorNone || sw != 0x9000) {
+            FURI_LOG_E(TAG, "Re-select after %s failed (%04X)", driver->name, sw);
+            worker->sm_active = false;
+            emrtd_sm_clear(&worker->sm);
+            return failure;
+        }
+    }
+
+    /*
+     * Published only now that the session is known to work, and before the
+     * progress report that follows, so that the scene has something true to
+     * put on the screen the moment the event reaches it.
+     */
+    worker->result.access = outcome;
+    worker->result.authenticated = true;
+    worker->driver_name = driver->name;
+    return EmrtdErrorNone;
+}
+
+/**
+ * Open the chip.
+ *
+ * Every driver is asked what it makes of EF.CardAccess and the best answer is
+ * tried first; a driver that fails is followed by the next, because a chip
+ * that advertises PACE may still have to be opened with BAC. A method the user
+ * pinned is the only one attempted, so that a deliberate choice is not quietly
+ * overridden.
+ */
+static EmrtdError emrtd_worker_authenticate(
+    EmrtdWorker* worker,
+    const uint8_t* card_access,
+    size_t card_access_len) {
+    const size_t count = emrtd_access_driver_count();
+
+    if(worker->config.method != EmrtdAccessMethodAuto) {
+        const EmrtdAccessDriver* driver = emrtd_access_driver_for_method(worker->config.method);
+        if(driver == NULL) {
+            return EmrtdErrorNoAccessMethod;
+        }
+
+        EmrtdError reason = EmrtdErrorNone;
+        if(driver->probe(card_access, card_access_len, &worker->config.credentials, &reason) ==
+           EmrtdAccessScoreUnsupported) {
+            return reason != EmrtdErrorNone ? reason : EmrtdErrorNoAccessMethod;
+        }
+        return emrtd_worker_try_driver(worker, driver, card_access, card_access_len);
+    }
+
+    EmrtdError best_error = EmrtdErrorNoAccessMethod;
+
+    /* Highest score first; the registry order decides between equal scores. */
+    for(int level = (int)EmrtdAccessScoreAnnounced; level >= (int)EmrtdAccessScorePossible;
+        level--) {
+        const EmrtdAccessScore score = (EmrtdAccessScore)level;
+        for(size_t i = 0; i < count; i++) {
+            if(worker->stop_requested) {
+                return EmrtdErrorCancelled;
+            }
+
+            const EmrtdAccessDriver* driver = emrtd_access_driver_at(i);
+            if(driver == NULL) {
+                continue;
+            }
+
+            EmrtdError reason = EmrtdErrorNone;
+            if(driver->probe(card_access, card_access_len, &worker->config.credentials, &reason) !=
+               score) {
+                if(reason != EmrtdErrorNone && best_error == EmrtdErrorNoAccessMethod) {
+                    best_error = reason;
+                }
+                continue;
+            }
+
+            const EmrtdError error =
+                emrtd_worker_try_driver(worker, driver, card_access, card_access_len);
+            if(error == EmrtdErrorNone) {
+                return EmrtdErrorNone;
+            }
+
+            best_error = error;
+            if(error == EmrtdErrorCardLost || error == EmrtdErrorTransport ||
+               error == EmrtdErrorCancelled) {
+                /* The document has gone; trying another protocol cannot help. */
+                return error;
+            }
+
+            /*
+             * A refused authentication can leave the chip in a state of its
+             * own choosing, so the application is selected again before the
+             * next driver is given a turn.
+             */
+            worker->sm_active = false;
+            emrtd_sm_clear(&worker->sm);
+            uint16_t sw = 0;
+            if(emrtd_worker_select_application(worker, &sw) != EmrtdErrorNone) {
+                return error;
+            }
+        }
+    }
+
+    return best_error;
+}
+
+/* --- The read ----------------------------------------------------------- */
+
+/** Which data groups will be attempted, and therefore how progress is scaled. */
+static size_t emrtd_worker_count_files(const EmrtdWorker* worker, EmrtdFileMask present) {
+    size_t count = 2; /* EF.COM and EF.SOD are always attempted. */
+    for(size_t i = (size_t)EmrtdFileDg1; i < (size_t)EmrtdFileCount; i++) {
+        const EmrtdFileInfo* info = emrtd_file_info((EmrtdFileId)i);
+        if(info == NULL || info->eac_protected) {
+            continue;
+        }
+        if((present & EMRTD_FILE_BIT(i)) && (worker->config.files & EMRTD_FILE_BIT(i))) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void emrtd_worker_read_data_groups(EmrtdWorker* worker, EmrtdFileMask present) {
+    for(size_t i = (size_t)EmrtdFileDg1; i < (size_t)EmrtdFileCount; i++) {
+        if(worker->stop_requested) {
+            return;
+        }
+
+        const EmrtdFileId id = (EmrtdFileId)i;
+        const EmrtdFileInfo* info = emrtd_file_info(id);
+        EmrtdFileResult* entry = &worker->result.files[i];
+        if(info == NULL) {
+            continue;
+        }
+
+        if(!(present & EMRTD_FILE_BIT(i))) {
+            entry->state = EmrtdFileStateAbsent;
+            continue;
+        }
+        if(info->eac_protected) {
+            /*
+             * DG3 and DG4 need Extended Access Control, which is a terminal
+             * certificate issued by a state. They are announced but cannot be
+             * read, and saying so is more useful than a failure.
+             */
+            entry->state = EmrtdFileStateSkipped;
+            entry->error = EmrtdErrorUnsupported;
+            continue;
+        }
+        if(!(worker->config.files & EMRTD_FILE_BIT(i))) {
+            entry->state = EmrtdFileStateSkipped;
+            continue;
+        }
+
+        const EmrtdError error = emrtd_worker_read_file(worker, id);
+        if(error == EmrtdErrorCancelled) {
+            return;
+        }
+        if(error == EmrtdErrorCardLost || error == EmrtdErrorTransport ||
+           error == EmrtdErrorSecureMessaging) {
+            /* The link or the session is gone; nothing further can be read. */
+            worker->result.error = error;
+            worker->result.error_file = id;
+            return;
+        }
+    }
+}
+
+/**
+ * The whole read, start to finish, on the NFC thread.
+ *
+ * The order is the one a real document accepts, and it is not arbitrary:
+ * EF.CardAccess has to be read before the access protocol is chosen, and
+ * EF.SOD has to be read before any data group so that the hashes can be
+ * computed while the bytes stream past rather than from a second copy.
+ */
+static void emrtd_worker_read(EmrtdWorker* worker) {
+    EmrtdReadResult* result = &worker->result;
+
+    if(!emrtd_worker_report(
+           worker, EmrtdWorkerStageSelectingApplication, EmrtdFileCom, 0, 0, 2, NULL)) {
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    uint16_t sw = 0;
+    EmrtdError error = emrtd_worker_select_application(worker, &sw);
+    if(error != EmrtdErrorNone) {
+        result->error = error;
+        return;
+    }
+    if(sw != 0x9000) {
+        FURI_LOG_E(TAG, "SELECT application: %04X", sw);
+        result->error = sw == 0x6A82 ? EmrtdErrorNotEmrtd : emrtd_error_from_sw(sw);
+        return;
+    }
+    result->application_selected = true;
+
+    /* EF.CardAccess, read in the clear before anything is negotiated. */
+    if(!emrtd_worker_report(
+           worker, EmrtdWorkerStageReadingCardAccess, EmrtdFileCom, 0, 0, 5, NULL)) {
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    uint8_t* card_access = malloc(EMRTD_WORKER_CARD_ACCESS_MAX);
+    size_t card_access_len = 0;
+    if(card_access != NULL) {
+        memset(card_access, 0, EMRTD_WORKER_CARD_ACCESS_MAX);
+        card_access_len =
+            emrtd_worker_read_card_access(worker, card_access, EMRTD_WORKER_CARD_ACCESS_MAX);
+    } else {
+        FURI_LOG_W(TAG, "No room for EF.CardAccess; access control will have to guess");
+    }
+
+    /*
+     * Reading EF.CardAccess left the master file selected on most chips, so
+     * the application is chosen again before a driver is handed the port; the
+     * drivers are documented to start from there.
+     */
+    if(result->card_access_read) {
+        if(emrtd_worker_select_application(worker, &sw) != EmrtdErrorNone || sw != 0x9000) {
+            FURI_LOG_W(TAG, "Re-select before authentication: %04X", sw);
+        }
+    }
+
+    if(worker->stop_requested) {
+        free(card_access);
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    if(!emrtd_worker_report(worker, EmrtdWorkerStageAuthenticating, EmrtdFileCom, 0, 0, 10, NULL)) {
+        free(card_access);
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    error = emrtd_worker_authenticate(worker, card_access, card_access_len);
+    if(card_access != NULL) {
+        memset(card_access, 0, EMRTD_WORKER_CARD_ACCESS_MAX);
+        free(card_access);
+    }
+    if(error != EmrtdErrorNone) {
+        result->error = error;
+        return;
+    }
+
+    FURI_LOG_I(TAG, "Opened with %s", result->access.summary);
+    /*
+     * The driver names are string literals held by the registry, so they stay
+     * valid long after this report has been turned into an event - which the
+     * progress structure requires of @c detail.
+     */
+    if(!emrtd_worker_report(
+           worker,
+           EmrtdWorkerStageAuthenticating,
+           EmrtdFileCom,
+           0,
+           0,
+           EMRTD_WORKER_FILES_BASE,
+           worker->driver_name)) {
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    /*
+     * EF.COM names what is on the chip, so the plan is only an estimate until
+     * it has been read; without it the default set is attempted instead.
+     */
+    worker->files_total = emrtd_worker_count_files(worker, emrtd_file_default_mask());
+    const EmrtdError com_error = emrtd_worker_read_file(worker, EmrtdFileCom);
+    if(com_error == EmrtdErrorCardLost || com_error == EmrtdErrorTransport ||
+       com_error == EmrtdErrorSecureMessaging || com_error == EmrtdErrorCancelled) {
+        result->error = com_error;
+        result->error_file = EmrtdFileCom;
+        return;
+    }
+
+    const EmrtdFileMask present = result->has_com ? result->com.present :
+                                                    emrtd_file_default_mask();
+    worker->files_total = emrtd_worker_count_files(worker, present);
+
+    if(worker->stop_requested) {
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    /*
+     * EF.SOD comes next, before any data group: it names the digest algorithm,
+     * and without that the hashes would have to be computed from a second copy
+     * of every file, which there is no room for.
+     */
+    const EmrtdError sod_error = emrtd_worker_read_file(worker, EmrtdFileSod);
+    if(sod_error == EmrtdErrorCardLost || sod_error == EmrtdErrorTransport ||
+       sod_error == EmrtdErrorSecureMessaging) {
+        result->error = sod_error;
+        result->error_file = EmrtdFileSod;
+        return;
+    }
+    if(worker->stop_requested) {
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    emrtd_worker_read_data_groups(worker, present);
+    if(worker->stop_requested && result->error == EmrtdErrorNone) {
+        result->error = EmrtdErrorCancelled;
+        return;
+    }
+
+    /*
+     * Each file was compared with EF.SOD as it streamed past, so by now the
+     * verdict is complete; the stage exists so that the screen can show it
+     * before the export begins.
+     */
+    emrtd_worker_report(
+        worker,
+        EmrtdWorkerStageVerifying,
+        result->error_file,
+        result->hashes_matched,
+        result->hashes_checked,
+        92,
+        NULL);
+}
+
+/* --- Export ------------------------------------------------------------- */
+
+static void emrtd_worker_export_result(EmrtdWorker* worker) {
+    if(worker->export_ctx == NULL) {
+        return;
+    }
+
+    emrtd_worker_report(worker, EmrtdWorkerStageExporting, EmrtdFileCom, 0, 0, 95, NULL);
+
+    if(worker->result.has_mrz) {
+        emrtd_export_write_mrz(worker->export_ctx, &worker->result.mrz);
+    }
+    emrtd_export_write_report(worker->export_ctx, &worker->result, &worker->config);
+
+    if(!emrtd_export_failed(worker->export_ctx)) {
+        worker->result.exported = true;
+        snprintf(
+            worker->result.export_path,
+            sizeof(worker->result.export_path),
+            "%s",
+            emrtd_export_path(worker->export_ctx));
+    }
+}
+
+/* --- The poller callback ------------------------------------------------ */
+
+/** Everything the callback is allowed to do once the read is over. */
+static NfcCommand emrtd_worker_finish(EmrtdWorker* worker) {
+    worker->sm_active = false;
+    emrtd_sm_clear(&worker->sm);
+    emrtd_iso14443_4_set_trace(worker->transport, NULL, NULL);
+    emrtd_iso14443_4_unbind(worker->transport);
+
+    /*
+     * The worker is started and stopped over and over, and these buffers were
+     * last holding the plaintext of somebody's data page.
+     */
+    memset(worker->command, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    memset(worker->response, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    memset(worker->lookahead, 0, EMRTD_WORKER_DG2_LOOKAHEAD);
+    memset(worker->digest_value, 0, sizeof(worker->digest_value));
+
+    furi_event_flag_set(worker->events, EMRTD_WORKER_FLAG_FINISHED);
+    return NfcCommandStop;
+}
+
+/**
+ * Drive the read from the poller's Ready event.
+ *
+ * The callback may only answer Continue or Stop. Stopping the poller from
+ * inside it would have the NFC thread wait for itself, so the flag above is
+ * set and the control thread does the stopping.
+ */
+static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* context) {
+    EmrtdWorker* worker = context;
+
+    if(worker->stop_requested) {
+        worker->result.error = EmrtdErrorCancelled;
+        return emrtd_worker_finish(worker);
+    }
+
+    bool ready = false;
+
+    if(event.protocol == NfcProtocolIso14443_4a) {
+        const Iso14443_4aPollerEvent* data = event.event_data;
+        if(data->type == Iso14443_4aPollerEventTypeReady) {
+            emrtd_iso14443_4_bind_4a(
+                worker->transport,
+                event.instance,
+                (const Iso14443_4aData*)nfc_poller_get_data(worker->poller));
+            ready = true;
+        }
+    } else if(event.protocol == NfcProtocolIso14443_4b) {
+        const Iso14443_4bPollerEvent* data = event.event_data;
+        if(data->type == Iso14443_4bPollerEventTypeReady) {
+            emrtd_iso14443_4_bind_4b(
+                worker->transport,
+                event.instance,
+                (const Iso14443_4bData*)nfc_poller_get_data(worker->poller));
+            ready = true;
+        }
+    } else {
+        worker->result.error = EmrtdErrorProtocol;
+        return emrtd_worker_finish(worker);
+    }
+
+    if(!ready) {
+        /*
+         * The event data of an activation failure is only filled in for some
+         * of the paths that produce one, so the count is what decides. The
+         * chip answered detection a moment ago, which means it supports
+         * ISO 14443-4; failing to activate it now says it has been moved away.
+         */
+        worker->activation_failures++;
+        if(worker->activation_failures >= EMRTD_WORKER_ACTIVATION_RETRIES) {
+            worker->result.error = EmrtdErrorCardLost;
+            return emrtd_worker_finish(worker);
+        }
+        /*
+         * Reported once and not on every retry: the poller repeats this event
+         * as fast as the radio allows, and the screen is only told things a
+         * person can see.
+         */
+        if(worker->activation_failures == 1) {
+            emrtd_worker_report(
+                worker, EmrtdWorkerStageWaitingForCard, EmrtdFileCom, 0, 0, 0, NULL);
+        }
+        return NfcCommandContinue;
+    }
+
+    worker->activation_failures = 0;
+    worker->transceiver = emrtd_iso14443_4_transceiver(worker->transport);
+    if(worker->export_ctx != NULL && worker->config.write_trace) {
+        emrtd_iso14443_4_set_trace(worker->transport, emrtd_worker_trace, worker);
+    }
+
+    emrtd_worker_read(worker);
+    emrtd_worker_export_result(worker);
+
+    if(worker->result.error != EmrtdErrorNone) {
+        FURI_LOG_W(TAG, "Read ended: %s", emrtd_error_text(worker->result.error));
+    }
+
+    /*
+     * The stage that ends the read is announced by the control thread once the
+     * poller is down and the export is closed, so that the result the scene
+     * reads when the event arrives is the finished one.
+     */
+    return emrtd_worker_finish(worker);
+}
+
+/* --- The control thread ------------------------------------------------- */
+
+/**
+ * Ask whether a document of this flavour is in the field.
+ *
+ * A fresh poller is needed for every attempt: stopping one leaves the NFC
+ * hardware unconfigured, and it is the allocation of the next that sets it up
+ * again. This is how the firmware's own scanner works.
+ */
+static bool emrtd_worker_detect(EmrtdWorker* worker, NfcProtocol protocol) {
+    NfcPoller* poller = nfc_poller_alloc(worker->nfc, protocol);
+    const bool detected = nfc_poller_detect(poller);
+    nfc_poller_free(poller);
+    return detected;
+}
+
+static int32_t emrtd_worker_thread(void* context) {
+    EmrtdWorker* worker = context;
+
+    emrtd_worker_report(worker, EmrtdWorkerStageWaitingForCard, EmrtdFileCom, 0, 0, 0, NULL);
+
+    NfcProtocol protocol = NfcProtocolInvalid;
+    while(!worker->stop_requested) {
+        if(emrtd_worker_detect(worker, NfcProtocolIso14443_4a)) {
+            protocol = NfcProtocolIso14443_4a;
+            break;
+        }
+        if(worker->stop_requested) {
+            break;
+        }
+        if(emrtd_worker_detect(worker, NfcProtocolIso14443_4b)) {
+            protocol = NfcProtocolIso14443_4b;
+            break;
+        }
+        furi_delay_ms(EMRTD_WORKER_DETECT_PAUSE_MS);
+    }
+
+    if(protocol == NfcProtocolInvalid) {
+        worker->result.error = EmrtdErrorCancelled;
+        emrtd_worker_report(worker, EmrtdWorkerStageError, EmrtdFileCom, 0, 0, 0, NULL);
+        return 0;
+    }
+
+    FURI_LOG_I(
+        TAG, "Detected %s", protocol == NfcProtocolIso14443_4a ? "ISO 14443-4A" : "ISO 14443-4B");
+
+    if(worker->config.export_to_sd || worker->config.write_trace) {
+        worker->export_ctx = emrtd_export_alloc(
+            worker->config.credentials.document_number, worker->config.write_trace);
+    }
+
+    worker->poller = nfc_poller_alloc(worker->nfc, protocol);
+    nfc_poller_start(worker->poller, emrtd_worker_poller_callback, worker);
+
+    /*
+     * The flag is only ever set from inside the poller callback, which the NFC
+     * worker thread reaches after it has declared itself running - and
+     * nfc_stop() insists on that. Waiting until the flag really is set, rather
+     * than until the wait returns, is therefore what makes the stop below safe.
+     */
+    while((furi_event_flag_get(worker->events) & EMRTD_WORKER_FLAG_FINISHED) == 0) {
+        furi_event_flag_wait(
+            worker->events,
+            EMRTD_WORKER_FLAG_FINISHED,
+            FuriFlagWaitAny | FuriFlagNoClear,
+            EMRTD_WORKER_WAIT_SLICE_MS);
+    }
+
+    nfc_poller_stop(worker->poller);
+    nfc_poller_free(worker->poller);
+    worker->poller = NULL;
+
+    if(worker->export_ctx != NULL) {
+        emrtd_export_free(worker->export_ctx);
+        worker->export_ctx = NULL;
+    }
+
+    emrtd_worker_report(
+        worker,
+        worker->result.error == EmrtdErrorNone ? EmrtdWorkerStageDone : EmrtdWorkerStageError,
+        worker->result.error_file,
+        0,
+        0,
+        100,
+        NULL);
+
+    return 0;
+}
+
+/* --- The public interface ------------------------------------------------ */
+
+EmrtdWorker* emrtd_worker_alloc(void) {
+    EmrtdWorker* worker = malloc(sizeof(EmrtdWorker));
+    memset(worker, 0, sizeof(EmrtdWorker));
+
+    worker->events = furi_event_flag_alloc();
+    worker->transport = emrtd_iso14443_4_alloc();
+    worker->transceiver = emrtd_iso14443_4_transceiver(worker->transport);
+
+    worker->command = malloc(EMRTD_WORKER_APDU_BUFFER_SIZE);
+    worker->response = malloc(EMRTD_WORKER_APDU_BUFFER_SIZE);
+    worker->lookahead = malloc(EMRTD_WORKER_DG2_LOOKAHEAD);
+    furi_check(worker->command && worker->response && worker->lookahead);
+
+    worker->config.files = emrtd_file_default_mask();
+    worker->config.export_to_sd = true;
+
+    return worker;
+}
+
+void emrtd_worker_free(EmrtdWorker* worker) {
+    furi_check(worker);
+
+    emrtd_worker_stop(worker);
+
+    emrtd_iso14443_4_free(worker->transport);
+    furi_event_flag_free(worker->events);
+
+    /* Both buffers have held plaintext from the document. */
+    memset(worker->command, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    memset(worker->response, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    memset(worker->lookahead, 0, EMRTD_WORKER_DG2_LOOKAHEAD);
+    free(worker->command);
+    free(worker->response);
+    free(worker->lookahead);
+
+    emrtd_sm_clear(&worker->sm);
+    memset(worker, 0, sizeof(EmrtdWorker));
+    free(worker);
+}
+
+void emrtd_worker_set_config(EmrtdWorker* worker, const EmrtdWorkerConfig* config) {
+    furi_check(worker);
+    furi_check(config);
+    furi_check(!worker->running);
+
+    worker->config = *config;
+    if(worker->config.files == 0) {
+        worker->config.files = emrtd_file_default_mask();
+    }
+}
+
+void emrtd_worker_set_callback(EmrtdWorker* worker, EmrtdWorkerCallback callback, void* context) {
+    furi_check(worker);
+    furi_check(!worker->running);
+
+    worker->callback = callback;
+    worker->callback_context = context;
+}
+
+void emrtd_worker_start(EmrtdWorker* worker, struct Nfc* nfc) {
+    furi_check(worker);
+    furi_check(nfc);
+    furi_check(!worker->running);
+
+    memset(&worker->result, 0, sizeof(EmrtdReadResult));
+    worker->files_total = 0;
+    worker->files_done = 0;
+    worker->activation_failures = 0;
+    worker->driver_name = NULL;
+    worker->sm_active = false;
+    emrtd_sm_clear(&worker->sm);
+
+    worker->nfc = (Nfc*)nfc;
+    worker->stop_requested = false;
+    furi_event_flag_clear(worker->events, EMRTD_WORKER_FLAG_FINISHED);
+
+    worker->thread =
+        furi_thread_alloc_ex("EmrtdWorker", EMRTD_WORKER_STACK_SIZE, emrtd_worker_thread, worker);
+    worker->running = true;
+    furi_thread_start(worker->thread);
+}
+
+void emrtd_worker_stop(EmrtdWorker* worker) {
+    furi_check(worker);
+
+    if(!worker->running) {
+        return;
+    }
+
+    /*
+     * The flag is raised before the join so that the read, which checks it at
+     * every exchange, is already on its way out by the time the join begins.
+     */
+    worker->stop_requested = true;
+    furi_thread_join(worker->thread);
+    furi_thread_free(worker->thread);
+    worker->thread = NULL;
+    worker->running = false;
+    worker->nfc = NULL;
+}
+
+const EmrtdReadResult* emrtd_worker_result(const EmrtdWorker* worker) {
+    furi_check(worker);
+
+    return &worker->result;
+}

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="618" height="240" viewBox="0 0 618 240" role="img" aria-label="eMRTD">
+  <title>eMRTD</title>
+  <g fill="currentColor">
+    <rect x="24" y="24" width="192" height="24"/>
+    <rect x="24" y="48" width="48" height="48"/>
+    <rect x="96" y="48" width="48" height="48"/>
+    <rect x="168" y="48" width="48" height="48"/>
+    <rect x="24" y="96" width="192" height="48"/>
+    <rect x="24" y="144" width="48" height="48"/>
+    <rect x="96" y="144" width="48" height="48"/>
+    <rect x="168" y="144" width="48" height="48"/>
+    <rect x="24" y="192" width="192" height="24"/>
+  </g>
+  <text x="258" y="149" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="110" font-weight="600" letter-spacing="7">eMRTD</text>
+  <text x="261" y="209" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" opacity="0.72">electronic passport reader for Flipper Zero</text>
+</svg>
