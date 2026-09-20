@@ -105,10 +105,17 @@ BIN := $(BUILD_DIR)/emrtd_tests
 
 .PHONY: test build clean distclean deps config-drift
 
-test: build
+# Both entry points fetch the dependency first and then re-enter, because a
+# pattern rule only matches when its prerequisite already exists. On a fresh
+# clone the mbed TLS sources are not there yet, so a single pass would decide
+# there is no rule to build .build/mbedtls_aes.o and stop - which is exactly
+# what a clean checkout in continuous integration does.
+test: deps
+	@$(MAKE) --no-print-directory $(BIN)
 	ASAN_OPTIONS=$(ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 $(BIN)
 
-build: $(BIN)
+build: deps
+	@$(MAKE) --no-print-directory $(BIN)
 
 MBEDTLS_OBJ := $(patsubst $(MBEDTLS_DIR)/library/%.c,$(BUILD_DIR)/mbedtls_%.o,$(MBEDTLS_SRC))
 APP_OBJ     := $(patsubst $(ROOT)/%.c,$(BUILD_DIR)/app_%.o,$(APP_SRC))
@@ -118,7 +125,7 @@ $(BIN): $(MBEDTLS_OBJ) $(APP_OBJ) $(TEST_OBJ)
 	$(CC) $(CFLAGS) $(SAN) -o $@ $^
 
 # mbed TLS is third party code, so it is built without -Werror.
-$(BUILD_DIR)/mbedtls_%.o: $(MBEDTLS_DIR)/library/%.c | $(MBEDTLS_DIR)/.stamp $(BUILD_DIR)
+$(BUILD_DIR)/mbedtls_%.o: $(MBEDTLS_DIR)/library/%.c | $(BUILD_DIR)
 	$(CC) $(MBEDTLS_CFLAGS) $(SAN) -c -o $@ $<
 
 $(BUILD_DIR)/app_%.o: $(ROOT)/%.c | $(BUILD_DIR)
@@ -159,7 +166,11 @@ config-drift:
 		fi; \
 	else \
 		if [ "$(STRICT)" = "1" ]; then \
-			echo "no ufbt SDK found; the drift check cannot compare anything"; \
+			echo "no ufbt SDK found, so there is nothing to compare against."; \
+			echo "looked in:"; \
+			echo "  $${UFBT_HOME:-$$HOME/.ufbt}/current/sdk_headers/f7_sdk/lib/mbedtls_cfg.h"; \
+			echo "  $$HOME/.ufbt/current/sdk_headers/f7_sdk/lib/mbedtls_cfg.h"; \
+			echo "pass SDK_CFG=<path> to point at it directly."; \
 			exit 1; \
 		fi; \
 		echo "no ufbt SDK deployed, skipping the drift check"; \
