@@ -17,61 +17,75 @@
  */
 static char emrtd_scene_data_groups_labels[EmrtdFileCount][24];
 
-/** The item showing each file, valid only while the screen is up. */
-static VariableItem* emrtd_scene_data_groups_items[EmrtdFileCount];
+/*
+ * What an item needs to know about itself.
+ *
+ * The list also keeps the context pointer rather than a copy, and hands it
+ * back to the callback, so telling each item which file it stands for costs
+ * nothing and saves the callback from having to ask the list where the cursor
+ * is - which would mean reaching back into the list from inside its own
+ * callback, at a moment when the list is holding its model open.
+ */
+typedef struct {
+    Emrtd* app;
+    uint8_t id;
+} EmrtdDataGroupItem;
+
+static EmrtdDataGroupItem emrtd_scene_data_groups_context[EmrtdFileCount];
 
 static bool emrtd_scene_data_groups_selectable(const EmrtdFileInfo* info) {
     return info != NULL && info->dg_number >= 0 && !info->eac_protected;
 }
 
-static void emrtd_scene_data_groups_apply(Emrtd* app, size_t id, bool selected) {
+static void emrtd_scene_data_groups_set(Emrtd* app, size_t id, bool selected) {
     if(selected) {
         app->config.files |= EMRTD_FILE_BIT(id);
     } else {
         app->config.files &= ~EMRTD_FILE_BIT(id);
     }
-
-    VariableItem* item = emrtd_scene_data_groups_items[id];
-    if(item != NULL) {
-        variable_item_set_current_value_index(item, selected ? 1 : 0);
-        variable_item_set_current_value_text(item, selected ? "Read" : "Skip");
-    }
 }
 
+/*
+ * Left and right. The list has already moved the index by the time it calls
+ * us, and the item it hands over is the only pointer to that item which is
+ * safe to hold: see the note above emrtd_scene_data_groups_populate.
+ */
 static void emrtd_scene_data_groups_changed(VariableItem* item) {
-    Emrtd* app = variable_item_get_context(item);
-    const uint8_t position = variable_item_list_get_selected_item_index(app->variable_item_list);
+    EmrtdDataGroupItem* entry = variable_item_get_context(item);
+    const bool selected = variable_item_get_current_value_index(item) != 0;
 
-    /* One item per file, added in file order, so the position is the id. */
-    if(position >= EmrtdFileCount) {
-        return;
-    }
-
-    emrtd_scene_data_groups_apply(app, position, variable_item_get_current_value_index(item) != 0);
+    emrtd_scene_data_groups_set(entry->app, entry->id, selected);
+    variable_item_set_current_value_text(item, selected ? "Read" : "Skip");
 }
 
-static void emrtd_scene_data_groups_enter_callback(void* context, uint32_t index) {
-    furi_assert(context);
-    Emrtd* app = context;
-
-    view_dispatcher_send_custom_event(app->view_dispatcher, index);
-}
-
-void emrtd_scene_data_groups_on_enter(void* context) {
-    furi_assert(context);
-    Emrtd* app = context;
+/*
+ * Fill the list from app->config.files.
+ *
+ * Nothing here keeps the VariableItem pointers the list hands back, and
+ * nothing may: the list holds its items in a single array which it grows by
+ * reallocating, sixteen items to the first allocation. This screen adds
+ * eighteen, so the seventeenth add copies the array elsewhere and frees the
+ * block the first sixteen items lived in - and the firmware clears a block as
+ * it frees it. A pointer kept from before that add therefore reads a null
+ * value text, and writing through it faults the whole system, not just the
+ * application. Every item is addressed through the argument the list passes
+ * to the callback instead.
+ */
+static void emrtd_scene_data_groups_populate(Emrtd* app) {
     VariableItemList* list = app->variable_item_list;
-
-    memset(emrtd_scene_data_groups_items, 0, sizeof(emrtd_scene_data_groups_items));
 
     for(size_t id = 0; id < EmrtdFileCount; id++) {
         const EmrtdFileInfo* info = emrtd_file_info((EmrtdFileId)id);
         char* label = emrtd_scene_data_groups_labels[id];
         const size_t label_size = sizeof(emrtd_scene_data_groups_labels[0]);
+        EmrtdDataGroupItem* entry = &emrtd_scene_data_groups_context[id];
+
+        entry->app = app;
+        entry->id = (uint8_t)id;
 
         if(info == NULL) {
             snprintf(label, label_size, "File %u", (unsigned)id);
-            emrtd_scene_data_groups_items[id] = variable_item_list_add(list, label, 1, NULL, app);
+            variable_item_list_add(list, label, 1, NULL, entry);
             continue;
         }
 
@@ -86,22 +100,43 @@ void emrtd_scene_data_groups_on_enter(void* context) {
         if(info->dg_number < 0) {
             /* EF.COM lists what is on the chip and EF.SOD carries the hashes
              * every other file is checked against; neither is optional. */
-            item = variable_item_list_add(list, label, 1, NULL, app);
+            item = variable_item_list_add(list, label, 1, NULL, entry);
             variable_item_set_current_value_text(item, "Always");
         } else if(info->eac_protected) {
             /* Fingerprints and iris images need a certificate issued by the
              * state that made the document, which this reader has no way of
              * holding. ICAO 9303-11, 4.6. */
-            item = variable_item_list_add(list, label, 1, NULL, app);
+            item = variable_item_list_add(list, label, 1, NULL, entry);
             variable_item_set_current_value_text(item, "EAC");
         } else {
             const bool selected = (app->config.files & EMRTD_FILE_BIT(id)) != 0;
-            item = variable_item_list_add(list, label, 2, emrtd_scene_data_groups_changed, app);
+            item = variable_item_list_add(list, label, 2, emrtd_scene_data_groups_changed, entry);
             variable_item_set_current_value_index(item, selected ? 1 : 0);
             variable_item_set_current_value_text(item, selected ? "Read" : "Skip");
         }
-        emrtd_scene_data_groups_items[id] = item;
     }
+}
+
+static void emrtd_scene_data_groups_enter_callback(void* context, uint32_t index) {
+    furi_assert(context);
+    Emrtd* app = context;
+
+    view_dispatcher_send_custom_event(app->view_dispatcher, index);
+}
+
+void emrtd_scene_data_groups_on_enter(void* context) {
+    furi_assert(context);
+    Emrtd* app = context;
+    VariableItemList* list = app->variable_item_list;
+
+    /*
+     * The list is shared with the options screen, which empties it on its way
+     * out. Emptying it again here costs nothing and makes the one thing the
+     * centre key depends on - that row N is file N - true by construction
+     * rather than by the good behaviour of whoever came before.
+     */
+    variable_item_list_reset(list);
+    emrtd_scene_data_groups_populate(app);
 
     /* The list refuses a null callback, and it is shared with the options
      * screen, so it is always given one. Here it makes the centre key do what
@@ -123,7 +158,17 @@ bool emrtd_scene_data_groups_on_event(void* context, SceneManagerEvent event) {
         const EmrtdFileInfo* info = emrtd_file_info((EmrtdFileId)id);
 
         if(emrtd_scene_data_groups_selectable(info)) {
-            emrtd_scene_data_groups_apply(app, id, (app->config.files & EMRTD_FILE_BIT(id)) == 0);
+            emrtd_scene_data_groups_set(app, id, (app->config.files & EMRTD_FILE_BIT(id)) == 0);
+
+            /*
+             * The centre key reports which row was pressed, not which item,
+             * and an item may not be held on to. Building the list again is
+             * what is left, and it costs nothing visible: emptying the list
+             * leaves the cursor and the scroll offset where they were, so the
+             * screen does not move under the user.
+             */
+            variable_item_list_reset(app->variable_item_list);
+            emrtd_scene_data_groups_populate(app);
         }
         consumed = true;
     }
@@ -141,7 +186,6 @@ void emrtd_scene_data_groups_on_exit(void* context) {
         variable_item_list_get_selected_item_index(app->variable_item_list));
 
     variable_item_list_reset(app->variable_item_list);
-    memset(emrtd_scene_data_groups_items, 0, sizeof(emrtd_scene_data_groups_items));
 
     emrtd_settings_save(app);
 }

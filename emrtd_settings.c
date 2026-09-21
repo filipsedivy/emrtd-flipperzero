@@ -159,9 +159,18 @@ bool emrtd_settings_load(Emrtd* app) {
         }
 
         if(emrtd_settings_read_uint32(file, EMRTD_KEY_FILES, &number)) {
-            /* EF.COM and EF.SOD are not optional; the reader needs both. */
-            app->config.files = (EmrtdFileMask)number | EMRTD_FILE_BIT(EmrtdFileCom) |
-                                EMRTD_FILE_BIT(EmrtdFileSod);
+            /*
+             * Only bits that name a file the reader is willing to ask for are
+             * kept. The default mask is exactly that set, so it drops both the
+             * bits that stand for nothing and the two groups behind Extended
+             * Access Control: a file that turned DG3 or DG4 on would be obeyed
+             * on every later run, the Data groups screen shows those rows as
+             * "EAC" with no way to clear them, and the screen would write the
+             * mask back out on the way out. EF.COM and EF.SOD are not
+             * optional; the reader needs both.
+             */
+            app->config.files = ((EmrtdFileMask)number & emrtd_file_default_mask()) |
+                                EMRTD_FILE_BIT(EmrtdFileCom) | EMRTD_FILE_BIT(EmrtdFileSod);
         }
 
         loaded = true;
