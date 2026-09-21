@@ -1071,7 +1071,13 @@ static size_t
     const EmrtdFileInfo* info = &emrtd_worker_card_access_info;
 
     uint16_t sw = 0;
-    if(emrtd_worker_select_file(worker, info, &sw) != EmrtdErrorNone || sw != 0x9000) {
+    const EmrtdError select = emrtd_worker_select_file(worker, info, &sw);
+    if(select != EmrtdErrorNone) {
+        /* The exchange failed, so there is no status word to report. */
+        FURI_LOG_I(TAG, "EF.CardAccess could not be selected: %s", emrtd_error_text(select));
+        return 0;
+    }
+    if(sw != 0x9000) {
         FURI_LOG_I(TAG, "EF.CardAccess is not available (%04X)", sw);
         return 0;
     }
@@ -1401,7 +1407,11 @@ static void emrtd_worker_read(EmrtdWorker* worker) {
      * drivers are documented to start from there.
      */
     if(result->card_access_read) {
-        if(emrtd_worker_select_application(worker, &sw) != EmrtdErrorNone || sw != 0x9000) {
+        sw = 0;
+        const EmrtdError reselect = emrtd_worker_select_application(worker, &sw);
+        if(reselect != EmrtdErrorNone) {
+            FURI_LOG_W(TAG, "Re-select before authentication: %s", emrtd_error_text(reselect));
+        } else if(sw != 0x9000) {
             FURI_LOG_W(TAG, "Re-select before authentication: %04X", sw);
         }
     }
