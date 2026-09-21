@@ -36,7 +36,8 @@ So the choice is deliberate and it is yours:
 
 An export is deleted with the Flipper's own file manager, or from a computer
 with the SD card in it; the reader browses its exports but does not erase
-them. A read with **Export to SD** off never writes one in the first place.
+them. A read with **Export to SD** off never writes one in the first place -
+that switch is the master one, and the APDU trace cannot write past it.
 
 ## The trace
 

@@ -89,11 +89,15 @@ settings file described below.
 - **Data groups** - which groups to attempt. The default is everything except
   DG3 and DG4, which are protected by EAC and will not open for any reader
   without a state issued terminal certificate.
-- **Export to SD** - whether a read writes anything at all. With it off, the
-  result stays on screen and nothing reaches storage.
+- **Export to SD** - whether a read writes anything at all. Default **on**.
+  It is the master switch: with it off the result stays on screen and nothing
+  reaches storage, the trace included.
 - **APDU trace** - write `trace.txt` next to the export: the exchange, as it
-  was sent and received. Read [security.md](security.md) before sending one to
-  anybody.
+  was sent and received. Default **off**, because it is a diagnostic tool and
+  it records the document's own answers in the clear. It writes into the export
+  directory, so it needs **Export to SD** on; with exporting off the row reads
+  `Needs export` and no trace is written. Read [security.md](security.md)
+  before sending one to anybody.
 - **Remember on SD** - keep the document number, the dates and the CAN
   between runs, in the settings file.
 

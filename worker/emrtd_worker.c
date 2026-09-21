@@ -1813,7 +1813,14 @@ static int32_t emrtd_worker_thread(void* context) {
 
     FURI_LOG_I(TAG, "Detected %s", type_a ? "ISO 14443-4A" : "ISO 14443-4B");
 
-    if(worker->config.export_to_sd || worker->config.write_trace) {
+    /*
+     * Export to SD is the master switch: with it off nothing is written at
+     * all, the trace included. The trace used to open the export on its own,
+     * which meant a user who had turned exporting off still got every data
+     * group, the facial image and the report on the card as soon as they
+     * turned the trace on to file a bug report.
+     */
+    if(worker->config.export_to_sd) {
         worker->export_ctx = emrtd_export_alloc(
             worker->config.credentials.document_number, worker->config.write_trace);
     }
@@ -1891,7 +1898,8 @@ static int32_t emrtd_worker_demo_thread(void* context) {
         return 0;
     }
 
-    if(worker->config.export_to_sd || worker->config.write_trace) {
+    /* Export to SD is the master switch here too; see the note above. */
+    if(worker->config.export_to_sd) {
         worker->export_ctx = emrtd_export_alloc(
             worker->config.credentials.document_number, worker->config.write_trace);
     }

@@ -21,6 +21,24 @@ typedef enum {
 
 static const char* const emrtd_scene_options_switch[] = {"Off", "On"};
 
+/*
+ * The trace row depends on another row, so what it says is worked out in one
+ * place and used both when the screen is built and when the row itself is
+ * toggled. Without the second use the hint would survive only until the user
+ * pressed the very row it is attached to.
+ */
+
+/* The trace is written into the export directory, so it cannot happen at all
+ * with exporting off; saying "On" there would be a lie. */
+static void emrtd_scene_options_show_trace(const Emrtd* app, VariableItem* item) {
+    if(app->config.write_trace && !app->config.export_to_sd) {
+        variable_item_set_current_value_text(item, "Needs export");
+    } else {
+        variable_item_set_current_value_text(
+            item, emrtd_scene_options_switch[app->config.write_trace ? 1 : 0]);
+    }
+}
+
 static void emrtd_scene_options_method_changed(VariableItem* item) {
     Emrtd* app = variable_item_get_context(item);
     const uint8_t index = variable_item_get_current_value_index(item);
@@ -42,7 +60,7 @@ static void emrtd_scene_options_trace_changed(VariableItem* item) {
     const uint8_t index = variable_item_get_current_value_index(item);
 
     app->config.write_trace = index != 0;
-    variable_item_set_current_value_text(item, emrtd_scene_options_switch[index]);
+    emrtd_scene_options_show_trace(app, item);
 }
 
 static void emrtd_scene_options_remember_changed(VariableItem* item) {
@@ -105,8 +123,7 @@ void emrtd_scene_options_on_enter(void* context) {
 
     item = variable_item_list_add(list, "APDU trace", 2, emrtd_scene_options_trace_changed, app);
     variable_item_set_current_value_index(item, app->config.write_trace ? 1 : 0);
-    variable_item_set_current_value_text(
-        item, emrtd_scene_options_switch[app->config.write_trace ? 1 : 0]);
+    emrtd_scene_options_show_trace(app, item);
 
     item = variable_item_list_add(
         list, "Remember on SD", 2, emrtd_scene_options_remember_changed, app);
