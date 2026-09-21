@@ -148,12 +148,18 @@ static Emrtd* emrtd_alloc(void) {
      * is written to the SD card, which is the only way anything survives the
      * app being closed. The APDU trace is off because it is a diagnostic tool
      * and it records the document's own responses in the clear.
+     *
+     * The credentials are neither kept on the card nor left in memory unless
+     * the user asks: they are the key to someone's identity document, so the
+     * default is the one that forgets. Both are in Options, and both are
+     * stated in docs/usage.md.
      */
     app->config.method = EmrtdAccessMethodAuto;
     app->config.files = emrtd_file_default_mask();
     app->config.export_to_sd = true;
     app->config.write_trace = false;
-    app->remember_credentials = true;
+    app->remember_credentials = false;
+    app->wipe_after_read = true;
 
 #ifdef EMRTD_DEMO
     /*
@@ -176,6 +182,13 @@ static Emrtd* emrtd_alloc(void) {
         "300701",
         sizeof(app->config.credentials.date_of_expiry));
 
+    /*
+     * ANNA MARIA ERIKSSON is a published specimen and not anybody's secret, and
+     * the demo build exists to be read over and over while the screens are
+     * photographed. Clearing the credentials after the first read would leave
+     * the second press with nothing to read with.
+     */
+    app->wipe_after_read = false;
 #endif
 
     emrtd_settings_load(app);

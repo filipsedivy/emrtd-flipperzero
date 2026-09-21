@@ -24,7 +24,16 @@
 #define TAG "EmrtdSettings"
 
 #define EMRTD_SETTINGS_HEADER  "eMRTD reader settings"
-#define EMRTD_SETTINGS_VERSION (1)
+/*
+ * Bumped whenever the meaning of the file changes, not when the reader's
+ * version does: a patch release must not cost the user their stored details.
+ * A file written by any other version is discarded *and deleted*, because it
+ * may hold credentials under keys this build no longer reads - leaving it in
+ * place would leave them on the card with nothing able to clear them.
+ *
+ * 1 -> 2: added EMRTD_KEY_WIPE, and the credential defaults became opt-in.
+ */
+#define EMRTD_SETTINGS_VERSION (2)
 
 #define EMRTD_KEY_DOC_NUMBER "Document Number"
 #define EMRTD_KEY_BIRTH      "Date of Birth"
@@ -35,6 +44,9 @@
 #define EMRTD_KEY_FILES      "Data Groups"
 #define EMRTD_KEY_EXPORT     "Export To SD"
 #define EMRTD_KEY_TRACE      "Write Trace"
+#define EMRTD_KEY_WIPE       "Wipe After Read"
+/* Informational only: never compared, so a patch release changes nothing. */
+#define EMRTD_KEY_READER     "Reader Version"
 
 /** The MRZ alphabet of ICAO 9303-3, section 4.2.2. */
 static bool emrtd_settings_is_mrz_string(const char* text) {
@@ -111,6 +123,7 @@ bool emrtd_settings_load(Emrtd* app) {
     FuriString* scratch = furi_string_alloc();
     EmrtdCredentials* credentials = &app->config.credentials;
     bool loaded = false;
+    bool stale = false;
     /* Hoisted so that the wipe below it is in scope; it carries the document
      * number and the CAN on their way out of the file. */
     char buffer[EMRTD_DOC_NUMBER_MAX + 1];
@@ -126,7 +139,12 @@ bool emrtd_settings_load(Emrtd* app) {
         }
         if(!furi_string_equal_str(scratch, EMRTD_SETTINGS_HEADER) ||
            version != EMRTD_SETTINGS_VERSION) {
-            FURI_LOG_W(TAG, "Settings file is not ours, or is a later version");
+            FURI_LOG_W(
+                TAG,
+                "Settings file is version %lu, not %u; discarding it",
+                (unsigned long)version,
+                EMRTD_SETTINGS_VERSION);
+            stale = true;
             break;
         }
 
@@ -154,6 +172,7 @@ bool emrtd_settings_load(Emrtd* app) {
         emrtd_settings_read_bool(file, EMRTD_KEY_REMEMBER, &app->remember_credentials);
         emrtd_settings_read_bool(file, EMRTD_KEY_EXPORT, &app->config.export_to_sd);
         emrtd_settings_read_bool(file, EMRTD_KEY_TRACE, &app->config.write_trace);
+        emrtd_settings_read_bool(file, EMRTD_KEY_WIPE, &app->wipe_after_read);
 
         uint32_t number = 0;
         if(emrtd_settings_read_uint32(file, EMRTD_KEY_METHOD, &number) &&
@@ -183,6 +202,15 @@ bool emrtd_settings_load(Emrtd* app) {
     emrtd_secure_wipe(buffer, sizeof(buffer));
     furi_string_free(scratch);
     flipper_format_free(file);
+
+    /*
+     * A file this build cannot read is removed rather than left behind: it was
+     * written by a version whose credential keys may differ, and Forget would
+     * not know to clear them.
+     */
+    if(stale && storage_file_exists(app->storage, EMRTD_SETTINGS_PATH)) {
+        storage_simply_remove(app->storage, EMRTD_SETTINGS_PATH);
+    }
 
     return loaded;
 }
@@ -258,6 +286,12 @@ bool emrtd_settings_save(Emrtd* app) {
             break;
         }
         if(!flipper_format_write_bool(file, EMRTD_KEY_TRACE, &app->config.write_trace, 1)) {
+            break;
+        }
+        if(!flipper_format_write_bool(file, EMRTD_KEY_WIPE, &app->wipe_after_read, 1)) {
+            break;
+        }
+        if(!flipper_format_write_string_cstr(file, EMRTD_KEY_READER, EMRTD_VERSION)) {
             break;
         }
 

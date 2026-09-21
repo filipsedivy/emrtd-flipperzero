@@ -28,11 +28,16 @@ anything the application could unlock unattended, a reader of the card can
 unlock too. A Flipper is a small object that gets left on desks and lost in
 bags, and the SD card can be taken out and read on any computer.
 
-So the choice is deliberate and it is yours:
+So the choice is deliberate and it is yours. **Remember on SD** is off by
+default, so unless you turn it on nothing of the key is written to the card:
 
-- leave **Remember on SD** off and type the values for each read, or
+- leave it off and type the values for each read, or
 - turn it on for convenience, and use **Document -> Forget stored data** when
   you are finished. That deletes the settings file.
+
+A settings file written by a build with a different file format is discarded
+*and removed* rather than left in place, because it may hold credentials under
+keys this build no longer reads - and Forget would not know to clear them.
 
 An export is deleted with the Flipper's own file manager, or from a computer
 with the SD card in it; the reader browses its exports but does not erase
@@ -78,8 +83,23 @@ can be committed.
 
 Session keys live in an `EmrtdSm` for the length of a session and are wiped by
 `emrtd_sm_clear()` when it ends. The credentials are wiped the same way when a
-read finishes, unless they are being remembered on purpose. Neither the keys
-nor the password ever reach the export or the trace.
+read succeeds, unless they are being remembered on purpose or **Wipe after
+read** has been turned off; a read that failed keeps them, so that the error
+screen can show what was used and Retry can use it again.
+
+Wiping is `emrtd_secure_wipe()`, which is `mbedtls_platform_zeroize()` and not
+`memset()`. The difference is not pedantry: a `memset()` over a buffer that is
+never read again is a dead store, and at the `-Os` every FAP is built with, the
+compiler deletes it. On this device a thread stack is a heap block, and the
+allocator does not zero what it hands out, so a wipe that the optimiser removed
+would leave the session keys in the next application's memory.
+
+The keys never reach the export or the trace. The **password** is a different
+matter, and the sentence that used to stand here was wrong about it: the MRZ
+password *is* the document number and the two dates, and all three are written
+into `mrz.txt` and `report.txt` in the clear, because they are part of the
+document's own data. The export directory is named after the document number
+as well. Treat an export as the identity it contains.
 
 ## What a read does and does not prove
 

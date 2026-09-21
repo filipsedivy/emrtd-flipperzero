@@ -17,15 +17,16 @@ typedef enum {
     EmrtdSceneOptionsIndexExport,
     EmrtdSceneOptionsIndexTrace,
     EmrtdSceneOptionsIndexRemember,
+    EmrtdSceneOptionsIndexWipe,
 } EmrtdSceneOptionsIndex;
 
 static const char* const emrtd_scene_options_switch[] = {"Off", "On"};
 
 /*
- * The trace row depends on another row, so what it says is worked out in one
- * place and used both when the screen is built and when the row itself is
- * toggled. Without the second use the hint would survive only until the user
- * pressed the very row it is attached to.
+ * Two of the rows below depend on another row, so what each says is worked out
+ * in one place and used both when the screen is built and when the row itself
+ * is toggled. Without the second use the hint would survive only until the
+ * user pressed the very row it is attached to.
  */
 
 /* The trace is written into the export directory, so it cannot happen at all
@@ -36,6 +37,16 @@ static void emrtd_scene_options_show_trace(const Emrtd* app, VariableItem* item)
     } else {
         variable_item_set_current_value_text(
             item, emrtd_scene_options_switch[app->config.write_trace ? 1 : 0]);
+    }
+}
+
+/* Nothing to wipe while the values are being kept on the card on purpose. */
+static void emrtd_scene_options_show_wipe(const Emrtd* app, VariableItem* item) {
+    if(app->remember_credentials) {
+        variable_item_set_current_value_text(item, "Kept on SD");
+    } else {
+        variable_item_set_current_value_text(
+            item, emrtd_scene_options_switch[app->wipe_after_read ? 1 : 0]);
     }
 }
 
@@ -61,6 +72,14 @@ static void emrtd_scene_options_trace_changed(VariableItem* item) {
 
     app->config.write_trace = index != 0;
     emrtd_scene_options_show_trace(app, item);
+}
+
+static void emrtd_scene_options_wipe_changed(VariableItem* item) {
+    Emrtd* app = variable_item_get_context(item);
+    const uint8_t index = variable_item_get_current_value_index(item);
+
+    app->wipe_after_read = index != 0;
+    emrtd_scene_options_show_wipe(app, item);
 }
 
 static void emrtd_scene_options_remember_changed(VariableItem* item) {
@@ -130,6 +149,12 @@ void emrtd_scene_options_on_enter(void* context) {
     variable_item_set_current_value_index(item, app->remember_credentials ? 1 : 0);
     variable_item_set_current_value_text(
         item, emrtd_scene_options_switch[app->remember_credentials ? 1 : 0]);
+
+    /* Clearing the credentials out of memory once a read has worked. */
+    item =
+        variable_item_list_add(list, "Wipe after read", 2, emrtd_scene_options_wipe_changed, app);
+    variable_item_set_current_value_index(item, app->wipe_after_read ? 1 : 0);
+    emrtd_scene_options_show_wipe(app, item);
 
     variable_item_list_set_enter_callback(list, emrtd_scene_options_enter_callback, app);
     variable_item_list_set_selected_item(

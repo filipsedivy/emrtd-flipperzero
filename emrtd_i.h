@@ -112,6 +112,12 @@ struct Emrtd {
     /* Settings, persisted to EMRTD_SETTINGS_PATH. */
     EmrtdWorkerConfig config;
     bool remember_credentials;
+    /*
+     * Whether a finished read clears the credentials out of memory. It has
+     * nothing to do when remember_credentials is on, because the values are
+     * on the card by the user's own choice; see emrtd_scene_read_on_exit().
+     */
+    bool wipe_after_read;
 
     /* The read in progress and what it produced. */
     Nfc* nfc;

@@ -98,8 +98,16 @@ settings file described below.
   directory, so it needs **Export to SD** on; with exporting off the row reads
   `Needs export` and no trace is written. Read [security.md](security.md)
   before sending one to anybody.
-- **Remember on SD** - keep the document number, the dates and the CAN
-  between runs, in the settings file.
+- **Remember on SD** - keep the document number, the dates and the CAN between
+  runs, in the settings file. Default **off**: those three values are the key
+  to the document, so keeping them is a choice you make rather than one you
+  inherit. A change to the settings file format clears the file, so an upgrade
+  may ask you to type them once more.
+- **Wipe after read** - clear the credentials out of memory once a read has
+  succeeded. Default **on**. It does nothing while **Remember on SD** is on,
+  because the values are on the card by your own choice, and the row then
+  reads `Kept on SD`. A read that *failed* keeps them either way: the error
+  screen shows what was used and its **Retry** runs again with them.
 
 ### Read
 

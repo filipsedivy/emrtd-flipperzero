@@ -278,4 +278,18 @@ void emrtd_scene_read_on_exit(void* context) {
         nfc_free(app->nfc);
         app->nfc = NULL;
     }
+
+    /*
+     * A read that worked has no further use for the key to the document, so
+     * it goes - after the worker, whose own copy is cleared when it is freed
+     * above. Only on success: a failed read leaves them in place because the
+     * error screen shows what was used and its Retry runs again with them,
+     * and a mistyped date is the commonest failure there is.
+     *
+     * Remembering them on the card is a deliberate choice by the user, and it
+     * outranks this one; see docs/security.md.
+     */
+    if(app->result.error == EmrtdErrorNone && !app->remember_credentials && app->wipe_after_read) {
+        emrtd_secure_wipe(&app->config.credentials, sizeof(app->config.credentials));
+    }
 }
