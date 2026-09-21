@@ -31,8 +31,15 @@ struct EmrtdIso14443_4 {
     Iso14443_3aPoller* poller_3a;
     Iso14443_4bPoller* poller_4b;
     EmrtdIsoDep isodep;
-    /* The last thing the radio said, kept so that a failure can name it. */
+    /*
+     * What the radio said about each frame of the APDU being exchanged. One
+     * EmrtdError covers a timeout, a checksum failure and an internal fault,
+     * and when a command goes unanswered three times it matters whether all
+     * three failed the same way.
+     */
     Iso14443_3aError last_error;
+    uint8_t frame_errors[EMRTD_ISODEP_RETRIES + 2];
+    uint8_t frame_error_count;
     BitBuffer* tx_buffer;
     BitBuffer* rx_buffer;
     EmrtdIso14443_4TraceCallback trace;
@@ -274,17 +281,20 @@ void emrtd_iso14443_4_failure_detail(
         return;
     }
     /*
-     * The mapped error says what it meant for the read; the radio code says
-     * what actually happened, and the two are not the same question. A
-     * timeout and an internal fault both arrive as "the document moved away".
+     * The mapped error says what it meant for the read; the radio codes say
+     * what actually happened on each attempt, and the two are not the same
+     * question. A timeout and an internal fault both arrive as "the document
+     * moved away", and three identical timeouts mean something different from
+     * three different faults.
      */
-    snprintf(
-        out,
-        out_size,
-        "%s (radio %d after %u attempts)",
-        emrtd_error_text(error),
-        instance->last_error,
-        (unsigned)(EMRTD_ISODEP_RETRIES + 1));
+    size_t pos = (size_t)snprintf(out, out_size, "%s, radio", emrtd_error_text(error));
+    if(instance->frame_error_count == 0) {
+        snprintf(out + pos, out_size - pos, " %d", instance->last_error);
+        return;
+    }
+    for(uint8_t i = 0; i < instance->frame_error_count && pos + 4 < out_size; i++) {
+        pos += (size_t)snprintf(out + pos, out_size - pos, " %u", instance->frame_errors[i]);
+    }
 }
 
 void emrtd_iso14443_4_set_trace(
@@ -368,7 +378,10 @@ static EmrtdError emrtd_iso14443_4_frame(
         instance->poller_3a, instance->tx_buffer, instance->rx_buffer, fwt_fc);
     instance->last_error = error;
     if(error != Iso14443_3aErrorNone) {
-        FURI_LOG_D(TAG, "Frame of %zu bytes failed, radio error %d", tx_len, error);
+        if(instance->frame_error_count < sizeof(instance->frame_errors)) {
+            instance->frame_errors[instance->frame_error_count++] = (uint8_t)error;
+        }
+        FURI_LOG_W(TAG, "Frame of %zu bytes went unanswered, radio error %d", tx_len, error);
         return emrtd_iso14443_4_map_error_3a(error);
     }
 
@@ -468,6 +481,8 @@ static EmrtdError emrtd_iso14443_4_transceive(
     if(tx_len < 4 || tx_len > EMRTD_ISO14443_4_BUFFER_SIZE) {
         return EmrtdErrorInvalidInput;
     }
+
+    instance->frame_error_count = 0;
 
     if(instance->trace != NULL) {
         instance->trace(instance->trace_context, true, tx, tx_len);
