@@ -45,7 +45,7 @@ jobs:
 
       - name: Build with ufbt
         id: build
-        uses: flipperdevices/flipperzero-ufbt-action@e7cd34914e61ddc056acd8daaab96d8b4d4d9f55 # v0.1.4
+        uses: ./.github/actions/ufbt
         with:
           sdk-channel: release
           sdk-index-url: ${{ matrix.index-url }}
@@ -77,7 +77,4 @@ jobs:
       # application. The sources do not vary by firmware, so once is enough.
       - name: Lint the sources
         if: matrix.firmware == 'official'
-        uses: flipperdevices/flipperzero-ufbt-action@e7cd34914e61ddc056acd8daaab96d8b4d4d9f55 # v0.1.4
-        with:
-          skip-setup: true
-          task: lint
+        run: ufbt lint -s
