@@ -2,7 +2,12 @@
 
 ## What you need
 
-The three values printed on the data page:
+One of two keys, both of them printed on the document you are holding. That is
+the whole access control model: a document you cannot read is a document you
+cannot open.
+
+**The three values of the machine readable zone**, which every eMRTD carries -
+at the bottom of a passport's data page, on the back of an identity card:
 
 | | Format | Example |
 | --- | --- | --- |
@@ -10,22 +15,23 @@ The three values printed on the data page:
 | Date of birth | day, month, year | `06.08.1969` |
 | Date of expiry | day, month, year | `01.07.2030` |
 
-Those three **are** the key to the chip: the reader hashes them into the
-password that opens it. Nothing else will do, and a document whose data page
-you cannot read is a document you cannot open.
+The reader hashes those three into the password that opens the chip, and for a
+passport they are the only way in.
 
-Some identity cards print a **card access number** instead - six digits, often
-next to the photo. A CAN works with PACE alone, not with BAC, and where one is
-available it is the better choice: it is shorter to type and there is no check
-digit arithmetic to get wrong.
+**Or the card access number**, six digits, which identity cards print and
+passports do not - often next to the photograph. Where a document has one it is
+the better choice: it is shorter to type, there is no check digit arithmetic to
+get wrong, and it is what opened the Czech identity card in the README's table.
+A CAN works with PACE alone, never with BAC, so the three values are still
+worth storing as a fall back.
 
-The antenna is in the **back** of the Flipper, so that is the side the
-document goes against: open the passport at the data page, lay it flat, and
-put the Flipper face up over the middle of the page. If nothing answers,
-close the book and try the back cover instead - the chip is in one place or
-the other, and a few centimetres decide it.
+The antenna is in the **back** of the Flipper, so that is the side the document
+goes against. A card lies flat on it, face to face. A passport is opened at the
+data page, laid flat, with the Flipper face up over the middle of the page; if
+nothing answers, close the book and try the back cover instead - the chip is in
+one place or the other, and a few centimetres decide it.
 
-Take the passport out of any case that has metal or another card in it, and
+Take the document out of any case that has metal or another card in it, and
 keep both still while the progress bar moves.
 
 ## The screens
@@ -64,9 +70,11 @@ A date of birth is read as a date in the past and an expiry as one in the
 future, which is the only way to tell 1930 from 2030. That is a display aid;
 what is stored is still the six digits the MRZ carries.
 
-The CAN field is for documents that print one. Entering a CAN does not
-discard the MRZ values: the reader can still fall back to BAC, which needs
-them.
+The CAN field is for documents that print one, which in practice means
+identity cards and residence permits. A stored CAN takes the place of the three
+MRZ values whenever PACE runs, and the Document screen labels it that way.
+Entering one does not discard the MRZ values: BAC has no other key, so the
+reader keeps them for the fall back.
 
 **Forget** clears the stored credentials. It asks first, and then deletes the
 settings file described below.

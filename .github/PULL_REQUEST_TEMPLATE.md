@@ -20,8 +20,9 @@ delete what does not.
 - [ ] Built with `ufbt` against the release channel and run on a device
 
 Tested against a real document: <!-- e.g. "2019 Czech passport, PACE,
-brainpoolP256r1", or "no". Never include a document number, a name or a date
-of birth. -->
+brainpoolP256r1, MRZ key" or "2023 Czech identity card, PACE over P-256,
+CAN", or "no". Name the kind of document and which key opened it. Never
+include a document number, a name or a date of birth. -->
 
 ## Platform checklist
 

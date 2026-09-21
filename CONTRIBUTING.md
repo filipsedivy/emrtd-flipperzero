@@ -110,5 +110,7 @@ a `ufbt` build against the release channel, and `ufbt lint`. Please run
 `make -C tests/host test` and `ufbt lint` before opening one.
 
 Say in the description what you tested it against. "Read a 2019 Czech
-passport, PACE, brainpoolP256r1" is worth a great deal here, and the country
-and the year say everything useful without saying whose document it was.
+passport, PACE, brainpoolP256r1" or "Czech identity card, PACE over P-256,
+opened with the CAN" is worth a great deal here: the country, the kind of
+document, the year and the key say everything useful without saying whose
+document it was.

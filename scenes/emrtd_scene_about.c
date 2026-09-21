@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Filip Sedivy
  *
  * What this is, what it implements, what it cannot do, and the one line that
- * matters before it is pointed at anybody's passport.
+ * matters before it is pointed at anybody's document.
  */
 #include "../emrtd_i.h"
 
@@ -22,8 +22,9 @@ void emrtd_scene_about_on_enter(void* context) {
         "The details it stores open\nan identity document.\n");
     furi_string_cat_str(
         body,
-        "\n\e#What it does\nReads an electronic travel\ndocument over NFC, opens it\n"
-        "with PACE or BAC, and writes\nevery data group it can\nreach to the SD card.\n");
+        "\n\e#What it does\nReads the chip in a\npassport, an identity card\n"
+        "or a residence permit, opens\nit with PACE or BAC, and\nwrites every data group it\n"
+        "can reach to the SD card.\n");
     furi_string_cat_str(
         body,
         "\n\e#Standards\nICAO Doc 9303 parts 3, 10\nand 11\n"

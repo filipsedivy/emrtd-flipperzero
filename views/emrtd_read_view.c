@@ -93,7 +93,7 @@ static void emrtd_read_view_draw_waiting(Canvas* canvas) {
     /*
      * AlignLeft here leaves 128 - EMRTD_READ_VIEW_HINT_X pixels, and
      * elements_multiline_text_aligned hyphenates any line wider than that
-     * rather than letting it run over. The three lines below measure 76, 61
+     * rather than letting it run over. The three lines below measure 77, 61
      * and 76 pixels against a column of 96, so the wrap never fires and the
      * layout is what it says.
      */
@@ -103,7 +103,7 @@ static void emrtd_read_view_draw_waiting(Canvas* canvas) {
         EMRTD_READ_VIEW_BODY_TOP,
         AlignLeft,
         AlignTop,
-        "Hold the data page\nflat against the\nback of the Flipper");
+        "Hold the document\nflat against the\nback of the Flipper");
 }
 
 static void emrtd_read_view_draw_callback(Canvas* canvas, void* context) {

@@ -38,10 +38,12 @@ that matches it.
 | **The chip will not open a session** | The document answered the scan, and then would not complete RATS. | Lift the Flipper clear, lay it back on the data page and read again. If it fails every time, send a trace: the first line names the card's frame size and waiting time, which is what this failure is about. |
 | **Radio exchange failed** | A frame did not come back. | The same as above. If it happens at the same point every time, the trace shows where. |
 | **The chip broke the protocol** | The answer did not fit ISO 14443-4. | Usually a marginal field rather than a faulty chip: move the document a little and read again. If it persists, attach a trace to a report. |
-| **Not an electronic passport** | The chip answered but carries no eMRTD application. | Bank cards, transport cards and access badges all answer, and none of them carry the application identifier `A0 00 00 02 47 10 01`. |
+| **Not an eMRTD document** | The chip answered but carries no eMRTD application. | Bank cards, transport cards and access badges all answer, and none of them carry the application identifier `A0 00 00 02 47 10 01`. A passport carries it, and so does an EU identity card issued since 2021. |
 | **The chip refused the command** | A status word other than 9000 came back. | The status word is shown with the error; the table below says what it means. |
 | **That file is not on this chip** | `6A82`. | Normal. Only DG1, DG2 and EF.SOD are mandatory; the rest are up to the issuing state, and EF.COM lists what is there. |
-| **The chip refused access** | `6982` or `6983`. | `6982` usually means the session was lost, so read again. `6983` means the chip has blocked itself after repeated wrong keys, and only the issuer can clear that. |
+| **The chip refused access** | `6982` on DG3 or DG4. The group is on the chip, and the chip will not serve it to a session that has not run Terminal Authentication. | Nothing to retry: Extended Access Control needs a terminal certificate issued by a state, which no application on a Flipper can hold. The status word is still worth having - `6982` says the group exists, where `6A82` would say it does not. |
+| **The chip refused access** | `6982` on any other file. The secure session is gone, or was never established. | Read again. If it happens on the same file every time, send a trace. |
+| **The chip refused access** | `6983`. The chip has blocked itself after repeated wrong keys. | Only the issuer can clear that. |
 | **The key does not open the chip** | The document number or the dates are not the ones this chip was issued with. | See "the key looks right and it still fails" below. |
 | **No way in to this chip** | Neither driver could establish a session. | The security screen names what the chip asked for. If PACE was announced with parameters this build cannot compute, one of the next three errors says which. |
 | **PACE curve out of reach** | The chip wants a curve above 256 bits. | Nothing to do on the device: `MBEDTLS_ECP_MAX_BITS` is 256 in the firmware's mbed TLS. Pin the method to BAC and see whether the document also offers it. |
@@ -67,7 +69,7 @@ line as well; what follows here is the background the screen has no room for.
 | --- | --- |
 | `6282` | End of file reached before the requested length - usually harmless |
 | `6300` | Authentication failed; the key is wrong |
-| `6982` | Security status not satisfied; the session is gone or was never there |
+| `6982` | Security status not satisfied; the file is there and the session lacks the rights for it - permanent on DG3 and DG4, otherwise a session that is gone or was never there |
 | `6983` | Authentication method blocked; the chip has locked itself |
 | `6A82` | File not found |
 | `6A86` | Incorrect parameters P1-P2 |
@@ -80,7 +82,7 @@ This used to be the common case and it was the reader's fault, not the
 document's. Up to version 1.0 the read ran over the firmware's ISO 14443-4A
 poller, which gives a card 120 microseconds to answer every block when its ATS
 carries no TB1, and 2.95 milliseconds to answer RATS. Neither is enough for a
-passport, neither is reachable from an application, and both failures arrive
+eMRTD chip, neither is reachable from an application, and both failures arrive
 as a timeout - which the reader reported as a document that had been taken
 away. Since then the reader runs the block transmission protocol itself and
 chooses its own waiting time, 295 milliseconds by default. Items 10 to 14 of
@@ -92,8 +94,9 @@ carries the ATS and the waiting time that was armed.
 
 ## The chip does not answer at all
 
-1. Open the passport at the data page, lay it flat, and put the Flipper on it
-   face up, over the middle of the page.
+1. A card goes flat against the back of the Flipper, face to face. A passport
+   is opened at the data page, laid flat, with the Flipper on it face up over
+   the middle of the page.
 2. If nothing answers, close the book and put the back cover against the
    device. The chip is in one place or the other, and a few centimetres
    decide it.

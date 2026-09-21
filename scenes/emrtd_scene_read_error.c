@@ -57,8 +57,14 @@ void emrtd_scene_read_error_on_enter(void* context) {
 
         if(credentials->has_can && credentials->can[0] != '\0') {
             furi_string_cat_printf(body, "\nCAN: %s", credentials->can);
+            /* Which of the two passwords was wrong is not knowable here: a key
+             * failure means no driver got in. So the screen says what each
+             * protocol would have used and leaves the suspicion to the user. */
+            furi_string_cat_str(
+                body, "\n\nPACE uses the CAN alone;\nBAC has no key but the\nthree values above.");
+        } else {
+            furi_string_cat_str(body, "\n\nAll three come from the\nmachine readable zone.");
         }
-        furi_string_cat_str(body, "\n\nAll three come from the\nbottom of the data page.");
     }
 
     /* The two numbers behind the refusal. Without them a report says only

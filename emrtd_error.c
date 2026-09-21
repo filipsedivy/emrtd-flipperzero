@@ -4,7 +4,7 @@
  *
  * The text behind every error code.
  *
- * The person holding the passport sees one line and one paragraph, and they
+ * The person holding the document sees one line and one paragraph, and they
  * are the only explanation they get: there is no log to consult and no second
  * screen. So the hint always names the next thing to try, and where the
  * failure is a property of this hardware rather than of the document it says
@@ -29,9 +29,9 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
 
     [EmrtdErrorNoCard] =
         {"No document found",
-         "Lay the Flipper flat on the data page of the passport, over the middle of the "
-         "page, and hold it still. The chip sits in the cover or in the data page itself, "
-         "so a few centimetres either way can be the difference."},
+         "Lay the Flipper flat against the document - the middle of the open data page of "
+         "a passport, or the face of a card - and hold it still. In a booklet the chip sits "
+         "in the cover or in the data page itself, so a few centimetres decide it."},
 
     [EmrtdErrorCardLost] =
         {"The document moved away",
@@ -41,7 +41,7 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
     [EmrtdErrorActivation] =
         {"The chip will not open a session",
          "The document answered when the reader looked for it, and then would not start "
-         "an ISO 14443-4 session. Lift the Flipper away, lay it back on the data page and "
+         "an ISO 14443-4 session. Lift the Flipper away, lay it back on the document and "
          "read again. If it fails every time, send a trace: the card's own timing "
          "parameters head the file and they say what the chip asked for."},
 
@@ -56,9 +56,10 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
          "a faulty chip, so move the document slightly and read again."},
 
     [EmrtdErrorNotEmrtd] =
-        {"Not an electronic passport",
-         "The chip answered but carries no eMRTD application. Bank cards, transit cards "
-         "and most identity cards without the passport symbol are not readable here."},
+        {"Not an eMRTD document",
+         "The chip answered but carries no eMRTD application. Bank cards, transit cards and "
+         "access badges all answer and none of them carry it. A passport does, and so does "
+         "an identity card or a residence permit built to ICAO Doc 9303."},
 
     [EmrtdErrorApdu] =
         {"The chip refused the command",
@@ -79,9 +80,10 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
     [EmrtdErrorWrongKey] =
         {"The key does not open the chip",
          "Check the document number, the date of birth and the date of expiry against the "
-         "data page. The check digit is computed for you, so type the number exactly as "
-         "printed, letters included, and use the dates from the machine readable zone at "
-         "the bottom of the page rather than the printed ones."},
+         "document. The check digit is computed for you, so type the number exactly as "
+         "printed, letters included, and take the dates from the machine readable zone "
+         "rather than from the printed lines. Where the document prints a card access "
+         "number, that one value replaces all three."},
 
     [EmrtdErrorNoAccessMethod] =
         {"No way in to this chip",
@@ -110,8 +112,9 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
     [EmrtdErrorPaceFailed] =
         {"PACE authentication failed",
          "The chip's token did not match the one computed here, which nearly always means "
-         "the MRZ input or the CAN is wrong. The CAN is the six digit number printed on "
-         "the data page, separate from the document number."},
+         "the MRZ input or the CAN is wrong. The CAN is the six digit number printed on the "
+         "document, separate from the document number, and an identity card usually has "
+         "one."},
 
     [EmrtdErrorSecureMessaging] =
         {"The secure channel broke",

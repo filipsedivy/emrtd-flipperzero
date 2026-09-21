@@ -5,7 +5,7 @@
  * One error code for every layer of the application.
  *
  * The reader runs unattended on a device with a four line screen, so an error
- * has to say what went wrong in words the person holding the passport can act
+ * has to say what went wrong in words the person holding the document can act
  * on. emrtd_error_text() returns exactly that; emrtd_error_detail() adds the
  * value that made it fail, where there is one.
  */

@@ -1,28 +1,29 @@
-Reads an electronic passport or identity card - an eMRTD, built to ICAO Doc
-9303 - over NFC, and writes what it finds to the SD card.
+Reads the contactless chip of an electronic identity document - a passport, a
+national identity card or a residence permit, all of them eMRTDs built to ICAO
+Doc 9303 - over NFC, and writes what it finds to the SD card.
 
-The chip in a travel document will not answer until the reader proves it is
-holding the document. This application does that with **PACE** as well as with
-**BAC**, which is the difference that matters: BAC is the protocol of 2006 and
-is being withdrawn, and a document issued in the European Union after 2017 may
-implement PACE only. Against such a chip a BAC-only reader gets as far as the
-first command and stops.
+The chip will not answer until the reader proves it is holding the document.
+This application does that with **PACE** as well as with **BAC**, which is the
+difference that matters: BAC is the protocol of 2006 and is being withdrawn,
+and a document issued in the European Union after 2017 may implement PACE only.
+An EU identity card issued since 2021 is exactly that case. Against such a chip
+a BAC-only reader gets as far as the first command and stops.
 
 ## To use
 
-You need the three values printed on the data page: the **document number**,
-the **date of birth** and the **date of expiry**. Those three are the key to
-the chip - a border reader takes them off the machine readable zone with a
-camera, and here you type them in. An identity card that prints a six digit
-**card access number** can be opened with that instead.
+You need what the document prints on itself. For a passport that is the three
+values of the machine readable zone - the **document number**, the **date of
+birth** and the **date of expiry**; a border reader takes them off the zone
+with a camera, and here you type them in. An identity card prints a six digit
+**card access number** as well, and that one value opens the chip on its own.
 
 Enter them under Document, then choose Read. The antenna is in the back of the
-Flipper: open the passport at the data page, lay it flat, and put the Flipper
-face up over the middle of the page. If nothing answers, close the book and
-try the back cover instead - the chip is in one place or the other. Take the
-document out of any case with metal or another card in it, and keep both still
-while the progress bar moves. A full read including the photograph takes
-several seconds.
+Flipper: a card lies flat against it, face to face, while a passport is opened
+at the data page and the Flipper laid face up over the middle of the page. If
+nothing answers, close the book and try the back cover instead - the chip is in
+one place or the other. Take the document out of any case with metal or another
+card in it, and keep both still while the progress bar moves. A full read
+including the photograph takes several seconds.
 
 ## What it reads
 

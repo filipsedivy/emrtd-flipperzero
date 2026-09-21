@@ -5,7 +5,7 @@
  * The details read off the data page.
  *
  * All four values are shown with what is stored in them, because the usual
- * failure of a passport reader is not a protocol error: it is one wrong
+ * failure of a document reader is not a protocol error: it is one wrong
  * character in a value the user cannot see without opening four screens.
  */
 #include "../emrtd_i.h"

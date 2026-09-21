@@ -306,7 +306,11 @@ static void test_error_text(void) {
     emrtd_test_begin("the hint for a wrong key tells the user what to do");
     const char* hint = emrtd_error_hint(EmrtdErrorWrongKey);
     TEST_CHECK(strstr(hint, "check digit") != NULL);
-    TEST_CHECK(strstr(hint, "data page") != NULL);
+    /* It has to name where the values are read off, and an identity card has
+     * no data page: the zone and the card access number are what it points at
+     * instead. */
+    TEST_CHECK(strstr(hint, "machine readable zone") != NULL);
+    TEST_CHECK(strstr(hint, "card access number") != NULL);
 
     emrtd_test_begin("a platform limit is named as one, not blamed on the document");
     TEST_CHECK(strstr(emrtd_error_hint(EmrtdErrorPaceUnsupportedDh), "mbed TLS") != NULL);

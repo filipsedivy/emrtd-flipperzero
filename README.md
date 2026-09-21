@@ -3,7 +3,8 @@
 </p>
 
 <p align="center">
-  <em>The chip in a passport answers to two protocols. This one speaks both.</em>
+  <em>Passport, identity card, residence permit - one chip, two protocols.
+  This one speaks both.</em>
 </p>
 
 <p align="center">
@@ -15,10 +16,33 @@
 
 ---
 
-eMRTD reads an electronic travel document - a passport or an identity card
-built to **ICAO Doc 9303** - on a **Flipper Zero**, and writes every data group
-it can reach to the SD card. No computer, no serial cable, no companion
-application.
+eMRTD reads the contactless chip in an electronic identity document - a
+passport, a national identity card or a residence permit, all built to **ICAO
+Doc 9303** - on a **Flipper Zero**, and writes every data group it can reach to
+the SD card. No computer, no serial cable, no companion application.
+
+## Which documents
+
+An eMRTD is not a kind of booklet, it is a data structure: any contactless chip
+that carries the ICAO LDS1 application, `A0 00 00 02 47 10 01`, is one. That
+covers
+
+- **passports**, whose machine readable zone is TD3, two lines of 44;
+- **national identity cards**, which in the European Union have carried the
+  same biometric chip since 2021 because Regulation (EU) 2019/1157 requires it,
+  with a TD1 zone of three lines of 30;
+- **residence permits** and the other ID-1 and ID-2 documents built to the same
+  part of the standard.
+
+The reader is not told which one it is facing. It selects the application,
+reads what `EF.CardAccess` announces and opens whatever answers, so the
+difference between a passport and an identity card comes down to two things:
+the key you type, and the layout of the zone that is decoded afterwards.
+
+An identity card may carry a second, **contact** chip as well - in the Czech
+card that is where the eIDAS certificates and the signature keys live. It
+speaks over the gold pads, and a Flipper is 13.56 MHz only, so nothing here can
+reach it.
 
 ## Why it exists
 
@@ -28,7 +52,10 @@ The readers that came before this one implement **BAC**, the access protocol of
 as the first command and stops.
 
 eMRTD implements both, reads `EF.CardAccess` to find out what the chip wants,
-and runs PACE first because that is what a modern document announces.
+and runs PACE first because that is what a modern document announces. The
+identity card in the table below is that case in the flesh: its
+`EF.CardAccess` announces one protocol, PACE over NIST P-256, and the European
+specification behind the card does not provide for BAC at all.
 
 ## What it does
 
@@ -37,7 +64,7 @@ and runs PACE first because that is what a modern document announces.
 - **Secure Messaging** for both cipher families, checked byte for byte against
   the ICAO test vectors.
 - **Its own ISO-DEP layer** on type A, because the firmware's poller gives a
-  card a waiting time no passport can meet.
+  card a waiting time no eMRTD chip can meet.
 - **Reads** EF.COM, EF.SOD and the non-EAC data groups, and checks every group
   against the hash EF.SOD lists for it.
 - **Exports** the raw files, the decoded MRZ, the facial image and a report to
@@ -53,15 +80,30 @@ tell a genuine document from a well made copy of one.
 
 ## Tested documents
 
-| Document | Access | Data groups | Hashes |
-| --- | --- | --- | --- |
-| Czech passport | BAC, 3DES, MRZ key - EF.CardAccess could not be read | DG1, DG2, DG14, DG15; DG3 announced and skipped | all four match |
+| Document | Key you type | Access | Data groups | Hashes |
+| --- | --- | --- | --- | --- |
+| Czech passport | the three MRZ values | BAC, 3DES - `EF.CardAccess` could not be read | DG1, DG2, DG14, DG15; DG3 announced and skipped | all four match |
+| Czech identity card, 2021 series | **the CAN** | PACE-ECDH-GM, AES-128, NIST P-256 - `EF.CardAccess` read | DG1 as TD1, DG2, DG14, DG15; DG3 announced and skipped | all four match |
 
-That document's DG14 declares PACE-ECDH-GM with AES-128 over NIST P-256, but
-DG14 is read only once a session is open, so the declaration arrives long after
-the moment it would have been useful. **PACE has not yet run against a chip**:
-it is checked against the ICAO test vectors and the host simulator, and nothing
-here says more than that.
+**The identity card is opened with its card access number.** The CAN is the six
+digit figure printed on the card; it goes in under Document -> CAN, and with it
+stored the reader uses it in place of the machine readable zone. A passport
+prints no CAN, so there the three MRZ values - document number, date of birth,
+date of expiry - are the only way in. The card's own TD1 zone was not tried as a
+key, so nothing here says whether that would work too.
+
+The passport row is a BAC read. That document's DG14 declares PACE-ECDH-GM with
+AES-128 over NIST P-256, but DG14 is read only once a session is open, so the
+declaration arrives long after the moment it would have been useful. **PACE has
+now run against a real chip** - the identity card, generic mapping over NIST
+P-256 with AES-128 - rather than only against the ICAO test vectors and the host
+simulator.
+
+Both rows were read on the device. For the identity card the detail was
+cross-checked against a host reference implementation driven over the same
+Flipper as its radio: the protocols the chip announces, the four hashes, the
+`6982` that DG3 answers a reader without a terminal certificate, and the EF.SOD
+signature that this reader cannot check and that one could.
 
 Rows come from pull requests - [CONTRIBUTING.md](CONTRIBUTING.md) says what may
 be written down about a document, and the pull request template already asks
@@ -89,11 +131,14 @@ Start -> Document (number, date of birth, date of expiry, or a CAN)
       -> Result   holder, document, security, files, photo
 ```
 
-The document number and the two dates are printed inside the document, which is
-why reading only works with it in hand: those three values **are** the key to
-the chip. Each read lands in its own directory under `/ext/apps_data/emrtd/`,
-and that directory is a complete identity - [docs/security.md](docs/security.md)
-says what it holds and what to do about it.
+The key is whatever the document prints on itself, which is why reading only
+works with it in hand: either the three values of the machine readable zone, or
+the six digit card access number where the document carries one. A passport has
+only the first; an identity card usually prints both, and the CAN is the
+shorter thing to type. Each read lands in its own directory under
+`/ext/apps_data/emrtd/`, and that directory is a complete identity -
+[docs/security.md](docs/security.md) says what it holds and what to do about
+it.
 
 [docs/usage.md](docs/usage.md) describes every screen, where to hold the
 document and what the export contains.
@@ -119,7 +164,7 @@ Building, testing and the house rules: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Use this on your own document, or with the explicit and informed consent of the
 person whose document it is. Access requires physical possession, because the
-key is derived from what is printed on the data page - but consent is not
+key is derived from what is printed on the document itself - but consent is not
 implied by possession, and a facial image is biometric data. Whatever you
 export is subject to the rules that apply where you are.
 

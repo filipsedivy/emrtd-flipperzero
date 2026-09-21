@@ -1,5 +1,8 @@
 ## 1.0
 - First release
+- Reads any ICAO Doc 9303 document - a passport, a national identity card, a
+  residence permit - and decodes the machine readable zone in all three
+  layouts: TD1, TD2 and TD3
 - PACE with the generic mapping over ECDH, with AES-128, AES-192 and AES-256
 - PACE curves: NIST P-192 to P-256 and brainpoolP192r1 to brainpoolP256r1
   (parameter ids 8 to 13); anything above 256 bits is refused by name

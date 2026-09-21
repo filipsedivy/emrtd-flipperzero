@@ -19,7 +19,7 @@ static bool
     UNUSED(context);
 
     if(text[0] == '\0') {
-        furi_string_set_str(error, "The number\nis on the\ndata page");
+        furi_string_set_str(error, "The number\nis in the\nMRZ");
         return false;
     }
 

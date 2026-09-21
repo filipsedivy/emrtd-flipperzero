@@ -1,5 +1,11 @@
 # What this reader can and cannot do
 
+The reader does not distinguish between kinds of document. Anything whose
+contactless chip carries the ICAO LDS1 application - a passport, a national
+identity card, a residence permit - is read by the same code path, and the
+only differences that reach the user are which password opens it and whether
+the machine readable zone is TD1, TD2 or TD3.
+
 Everything below is a property of this build on this firmware. The entries
 marked **no** are platform limits rather than unfinished work, and each one is
 measured and written down in [platform.md](platform.md).
@@ -11,7 +17,7 @@ measured and written down in [platform.md](platform.md).
 | PACE-ECDH-GM, AES-128, AES-192, AES-256 | **yes** |
 | PACE curves: brainpoolP192r1..P256r1, NIST P-192..P-256 (parameter ids 8-13) | **yes** |
 | BAC with 3DES | **yes** |
-| Password from the MRZ, or from the CAN | **yes** |
+| Password from the MRZ, or from the CAN | **yes** - a passport prints only the first, an identity card usually both |
 | PACE curves above 256 bits (ids 14-18) | **no** - `MBEDTLS_ECP_MAX_BITS` is 256 in the firmware's mbed TLS, and the curve is refused by name |
 | PACE over MODP/DH groups (ids 0-2) | **no** - `mbedtls_mpi_exp_mod` cannot be linked into an application, see [platform.md](platform.md) |
 | PACE with the integrated or chip authentication mapping | **no** - detected and refused by name |
@@ -26,6 +32,7 @@ which variant it was.
 | | |
 | --- | --- |
 | EF.COM, EF.SOD, DG1, DG2, DG11, DG12, DG14, DG15 and the other non-EAC groups | **yes** |
+| The machine readable zone in all three layouts: TD1, TD2, TD3 | **yes** - three lines of 30, two of 36, two of 44 |
 | Data group hashes against EF.SOD | **yes** |
 | A frame waiting time the chip can actually meet | **yes** - the reader runs ISO-DEP itself on type A rather than using the firmware's poller |
 | DG3 and DG4, the fingerprints and the iris | **no** - protected by Extended Access Control, which needs a state issued terminal certificate |

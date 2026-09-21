@@ -4,11 +4,12 @@
  *
  * Remembering the credentials and the options between runs.
  *
- * The file this writes holds the three values that open an electronic
- * passport, which is to say the key to someone's identity document. It is
- * stored in the clear, because the Flipper has nowhere to keep a secret that
- * the person holding it could not read anyway, so the file says what it is in
- * its header and the user can delete it from the Document scene at any time.
+ * The file this writes holds the values that open the chip - the three from the
+ * machine readable zone, or a card access number - which is to say the key to
+ * someone's identity document. It is stored in the clear, because the Flipper
+ * has nowhere to keep a secret that the person holding it could not read
+ * anyway, so the file says what it is in its header and the user can delete it
+ * from the Document scene at any time.
  *
  * Nothing read back from the file is trusted: a hand edited or truncated file
  * must leave the application in the same state as no file at all.

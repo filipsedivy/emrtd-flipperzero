@@ -29,7 +29,7 @@ and `currentColor` there is black.
 | --- | --- |
 | `images/emrtd_10px.png` | The `fap_icon`; 10x10 and one bit, as the manifest requires |
 | `images/EmrtdChip_24x24.png` | The same mark at two pixels per cell, which the read view draws as `I_EmrtdChip_24x24` |
-| `assets/logo.svg` | The mark as one even-odd path beside the wordmark, not a traced bitmap; 698x240, measured to fit |
+| `assets/logo.svg` | The mark as one even-odd path beside the wordmark, not a traced bitmap; 718x240, measured to fit |
 | `assets/logo.png`, `assets/logo.txt` | The raster and text forms of the same mark |
 
 All four are generated from the one grid definition in the script, which checks

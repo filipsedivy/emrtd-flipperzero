@@ -2,10 +2,11 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Filip Sedivy
  *
- * eMRTD - an electronic passport reader for the Flipper Zero.
+ * eMRTD - a reader for electronic identity documents, for the Flipper Zero.
  *
- * Reads an ICAO Doc 9303 travel document over NFC, opening it with PACE or
- * BAC, and exports every data group it can reach to the SD card.
+ * Reads the contactless chip of an ICAO Doc 9303 document - a passport, an
+ * identity card, a residence permit - over NFC, opening it with PACE or BAC,
+ * and exports every data group it can reach to the SD card.
  */
 #pragma once
 
