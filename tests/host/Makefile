@@ -26,7 +26,8 @@ BUILD_DIR       := .build
 
 ROOT := ../..
 
-# Application sources under test. Extended as the layers land.
+# Application sources under test, and the simulated chip they are driven
+# against. Extended as the layers land.
 APP_SRC := \
 	$(ROOT)/emrtd_error.c \
 	$(ROOT)/crypto/emrtd_crypto.c \
@@ -47,11 +48,11 @@ APP_SRC := \
 	$(ROOT)/transport/emrtd_isodep.c \
 	$(ROOT)/access/emrtd_access.c \
 	$(ROOT)/access/emrtd_access_bac.c \
-	$(ROOT)/access/emrtd_access_pace.c
+	$(ROOT)/access/emrtd_access_pace.c \
+	$(ROOT)/sim/emrtd_sim.c
 
 TEST_SRC := \
 	emrtd_test.c \
-	emrtd_sim.c \
 	test_mac.c \
 	test_kdf.c \
 	test_ec.c \

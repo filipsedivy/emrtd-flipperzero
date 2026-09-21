@@ -19,6 +19,8 @@ it against the published ICAO test vectors without a device in reach.
   protocol/          TLV, APDU, the file catalogue, MRZ, LDS, security infos
      |
   transport/         one port: move an APDU, bring back the answer
+     |
+  sim/ demo/         the other thing behind that port: a chip with no radio
 ```
 
 Nothing points upwards. `crypto` and `protocol` sit side by side because each
@@ -36,15 +38,29 @@ names a cipher - and they are free of everything above.
 | `worker/` | `emrtd_worker` (the read, on the NFC stack's thread) and `emrtd_export` (the SD card) |
 | `views/` | `emrtd_read_view` (progress) and `emrtd_date_input` (a date as three fields) |
 | `scenes/` | one file per scene, generated into an enum and a handler table by `emrtd_scene_config.h` |
+| `sim/` | `emrtd_sim`, a passport chip simulated at the APDU level, behind the same port the radio is behind |
+| `demo/` | `emrtd_demo`, which configures that chip and slows it to human speed. Compiled only into the demo build |
 
 ## The transceiver port
 
 Every layer that needs the chip calls `emrtd_transceiver_exchange()`, which
 is a vtable with a context pointer. On the device the implementation is
-`transport/emrtd_iso14443_4.c`; in the test suite it is a simulated chip that
-answers from a scripted set of files. Because the port is the only way down,
-the same PACE run that opens a real passport can be exercised on a host with a
+`transport/emrtd_iso14443_4.c`; otherwise it is `sim/emrtd_sim.c`, a chip
+simulated down to the APDU, which answers BAC, PACE and Secure Messaging from
+a small set of files of its own. Because the port is the only way down, the
+same PACE run that opens a real passport can be exercised on a host with a
 sanitizer attached.
+
+The simulated chip has two callers. The host suite drives it directly. The
+demo build - `EMRTD_DEMO=1 ufbt`, a separate package that exists so the
+screens can be photographed for the application catalogue without a document
+in hand - drives it through `demo/emrtd_demo.c`, which adds the credentials to
+build the document from and a delay per exchange, because a chip that answers
+in microseconds would take every progress screen past before the display had
+drawn. Everything above the port is the real thing in both cases; only the
+radio is absent. The released package compiles neither directory, and there is
+no switch in the user interface that reaches them: a simulation is a way of
+photographing the application, never a feature of it.
 
 The port also carries the two frame sizes - `fsc`, what the card announced in
 its ATS, and `fsd`, what the reader can receive - because on this platform

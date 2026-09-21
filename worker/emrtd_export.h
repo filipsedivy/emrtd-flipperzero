@@ -33,10 +33,25 @@
 extern "C" {
 #endif
 
-/** Where exports go. */
-#define EMRTD_EXPORT_DIR    "/ext/apps_data/emrtd"
-/** Where the entered credentials are remembered between runs. */
+/** Where exports go. Shared by both builds, so the paths on screen match. */
+#define EMRTD_EXPORT_DIR "/ext/apps_data/emrtd"
+
+/*
+ * Where the entered credentials are remembered between runs.
+ *
+ * The demo build keeps its own file, and the reason is not tidiness. Its
+ * document is built from whatever credentials it is configured with, so if it
+ * read the file the real build writes, the specimen's name would appear on
+ * screen over a real document number and a real date of birth - and those
+ * screens are about to be published. Writing is as bad in the other
+ * direction: leaving the options screen saves, and the demo would overwrite
+ * somebody's remembered credentials with the specimen.
+ */
+#ifdef EMRTD_DEMO
+#define EMRTD_SETTINGS_PATH "/ext/apps_data/emrtd/emrtd_demo.settings"
+#else
 #define EMRTD_SETTINGS_PATH "/ext/apps_data/emrtd/emrtd.settings"
+#endif
 
 typedef struct EmrtdExport EmrtdExport;
 

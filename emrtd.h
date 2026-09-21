@@ -14,7 +14,16 @@
 extern "C" {
 #endif
 
+/*
+ * Stamped into the APDU trace, so that a log says which package produced it.
+ * The demo build says so in the version rather than only on screen: a trace
+ * from a simulated chip must not be mistaken for one from a document.
+ */
+#ifdef EMRTD_DEMO
+#define EMRTD_VERSION "1.0.0-demo"
+#else
 #define EMRTD_VERSION "1.0.0"
+#endif
 
 typedef struct Emrtd Emrtd;
 

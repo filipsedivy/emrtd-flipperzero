@@ -69,11 +69,31 @@ static void emrtd_scene_read_view_callback(void* context) {
  * @return true when the read may start
  */
 static bool emrtd_scene_read_have_memory(Emrtd* app) {
+#ifdef EMRTD_DEMO
+    const size_t free_min = EMRTD_DEMO_HEAP_FREE_MIN;
+    const size_t block_min = EMRTD_DEMO_HEAP_BLOCK_MIN;
+#else
+    const size_t free_min = EMRTD_HEAP_FREE_MIN;
+    const size_t block_min = EMRTD_HEAP_BLOCK_MIN;
+#endif
+
     app->heap_free = memmgr_get_free_heap();
     app->heap_largest_block = memmgr_heap_get_max_free_block();
     app->heap_host_connected = false;
 
-    if(app->heap_free >= EMRTD_HEAP_FREE_MIN && app->heap_largest_block >= EMRTD_HEAP_BLOCK_MIN) {
+#ifdef EMRTD_DEMO
+    /* Printed on the way in, not only on refusal: the thresholds above are
+     * provisional and this is the measurement that settles them. */
+    FURI_LOG_I(
+        TAG,
+        "demo read: free %zu (need %zu), largest block %zu (need %zu)",
+        app->heap_free,
+        free_min,
+        app->heap_largest_block,
+        block_min);
+#endif
+
+    if(app->heap_free >= free_min && app->heap_largest_block >= block_min) {
         return true;
     }
 
@@ -88,11 +108,11 @@ static bool emrtd_scene_read_have_memory(Emrtd* app) {
 
     FURI_LOG_E(
         TAG,
-        "read refused: free %zu (need %u), largest block %zu (need %u), host %s",
+        "read refused: free %zu (need %zu), largest block %zu (need %zu), host %s",
         app->heap_free,
-        EMRTD_HEAP_FREE_MIN,
+        free_min,
         app->heap_largest_block,
-        EMRTD_HEAP_BLOCK_MIN,
+        block_min,
         app->heap_host_connected ? "connected" : "absent");
 
     return false;
@@ -117,21 +137,43 @@ void emrtd_scene_read_on_enter(void* context) {
         return;
     }
 
+#ifndef EMRTD_DEMO
     dolphin_deed(DolphinDeedNfcRead);
+#endif
 
     emrtd_read_view_set_callback(app->read_view, emrtd_scene_read_view_callback, app);
     emrtd_read_view_set_access(app->read_view, NULL);
     emrtd_read_view_set_progress(app->read_view, &app->progress);
 
     /*
+     * The largest allocation first, before anything else has had a chance to
+     * eat into the block the check above measured. emrtd_worker_alloc() takes
+     * about two kilobytes of its own, and on a heap whose largest free block
+     * only just cleared EMRTD_HEAP_BLOCK_MIN that is enough to leave the
+     * eight kilobyte stack below without a home - which on this firmware is a
+     * reboot, not a failure. So the order here is part of the check.
+     */
+#ifdef EMRTD_DEMO
+    /* Nothing to allocate: the demo's own thread carries the read, and its
+     * stack is asked for inside emrtd_worker_start_demo(). app->nfc stays
+     * NULL, so on_exit skips nfc_free(). See demo/emrtd_demo.h. */
+#else
+    /*
      * The radio is taken for the length of the read and given back in
      * on_exit, so that browsing saved reads does not hold the NFC hardware.
      */
     app->nfc = nfc_alloc();
+#endif
+
     app->worker = emrtd_worker_alloc(&app->result);
     emrtd_worker_set_config(app->worker, &app->config);
     emrtd_worker_set_callback(app->worker, emrtd_scene_read_worker_callback, app);
+
+#ifdef EMRTD_DEMO
+    emrtd_worker_start_demo(app->worker);
+#else
     emrtd_worker_start(app->worker, app->nfc);
+#endif
 
     emrtd_blink_start(app);
 
@@ -176,7 +218,10 @@ bool emrtd_scene_read_on_event(void* context, SceneManagerEvent event) {
         case EmrtdCustomEventWorkerSuccess:
             /* app->result is the record the worker has been filling, so it
              * needs no rescuing before on_exit frees the worker. */
+#ifndef EMRTD_DEMO
+            /* Nothing was read, so nothing is earned. */
             dolphin_deed(DolphinDeedNfcReadSuccess);
+#endif
             scene_manager_next_scene(app->scene_manager, EmrtdSceneReadSuccess);
             consumed = true;
             break;

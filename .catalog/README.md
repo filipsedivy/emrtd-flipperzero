@@ -64,5 +64,15 @@ Use this on your own document, or with the explicit consent of the person
 whose document it is. Local rules on biometric data apply to whatever you
 export.
 
+## About the screenshots
+
+They are of a document that does not exist. Taking them from a real one would
+publish somebody's document number and photograph, so the pictures come from a
+build of this same application whose reads run against a simulated chip
+carrying the ICAO specimen - Anna Maria Eriksson of Utopia, who is not a
+person. Every screen is the application's own, drawn from a read that ran the
+same PACE, the same Secure Messaging and the same parsers as a read from a
+document; only the radio was absent. That build is not the one published here.
+
 Source, documentation and issues:
 <https://github.com/filipsedivy/emrtd-flipperzero>

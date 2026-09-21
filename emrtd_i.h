@@ -151,6 +151,41 @@ struct Emrtd {
 #define EMRTD_HEAP_BLOCK_MIN 8200u
 #define EMRTD_HEAP_FREE_MIN  27688u
 
+#ifdef EMRTD_DEMO
+/*
+ * The same two questions for the demo build, whose read has a different
+ * shape: no NFC stack is allocated at all, and in its place there is one
+ * thread carrying both ends of PACE - the reader's and the simulated chip's -
+ * plus the chip itself and the files it holds.
+ *
+ * Neither figure has been measured. They are therefore built out of the two
+ * that were, plus what the demo is known to add, and rounded the only way
+ * that is safe: a threshold set too high refuses a read that would have
+ * worked and prints both numbers, while one set too low starts a read that
+ * cannot finish - and on this firmware an allocation that cannot be met
+ * crashes the device rather than failing, as the note above explains.
+ *
+ * The block: ten kilobytes of thread stack and its header, which is asked for
+ * after emrtd_worker_alloc() has taken its own, so the worker's share is
+ * counted here too in case it all comes off the same block.
+ *
+ * The free heap: the real read's peak, which the demo repeats almost step for
+ * step, plus the two kilobytes its thread stack has over the NFC thread's
+ * eight and the chip's own footprint.
+ *
+ * Expect the first run to refuse, especially with qFlipper attached, which is
+ * the condition that costs the most heap and the reason heap_host_connected
+ * exists. That run prints what it saw; bring the figures down to it. Down to
+ * a value at which a demo read has completed, and no lower.
+ */
+#define EMRTD_DEMO_STACK_ALLOWANCE  10248u
+#define EMRTD_DEMO_WORKER_ALLOWANCE 2560u
+#define EMRTD_DEMO_CHIP_ALLOWANCE   2560u
+
+#define EMRTD_DEMO_HEAP_BLOCK_MIN (EMRTD_DEMO_STACK_ALLOWANCE + EMRTD_DEMO_WORKER_ALLOWANCE)
+#define EMRTD_DEMO_HEAP_FREE_MIN  (EMRTD_HEAP_FREE_MIN + 2048u + EMRTD_DEMO_CHIP_ALLOWANCE)
+#endif
+
 /* --- Helpers shared by the scenes --------------------------------------- */
 
 void emrtd_text_store_set(Emrtd* app, const char* format, ...);
