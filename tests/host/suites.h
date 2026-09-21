@@ -14,6 +14,7 @@
     X(ec, "elliptic curves")                     \
     X(tlv, "BER-TLV")                            \
     X(apdu, "APDU encoding")                     \
+    X(isodep, "ISO-DEP block transmission")      \
     X(files, "file catalogue")                   \
     X(mrz, "machine readable zone")              \
     X(lds, "logical data structure")             \

@@ -31,7 +31,7 @@ names a cipher - and they are free of everything above.
 | --- | --- |
 | `protocol/` | `emrtd_tlv` (BER-TLV, no copies, no allocation), `emrtd_apdu` (ISO 7816-4 and the commands of Doc 9303), `emrtd_files` (the catalogue of elementary files), `emrtd_mrz` (check digits, the key input, parsing DG1), `emrtd_lds` (EF.COM, DG1, DG2, DG11, DG12, DG15, EF.SOD), `emrtd_security_info` (EF.CardAccess and DG14) |
 | `crypto/` | `emrtd_crypto` (cipher properties), `emrtd_mac` (Retail MAC, AES-CMAC, ISO 9797-1 padding), `emrtd_kdf` (9303-11 section 9.7), `emrtd_ec` (the standardized curves), `emrtd_rng`, `emrtd_sm` (Secure Messaging), `emrtd_bac`, `emrtd_pace` |
-| `transport/` | `emrtd_transceiver`: the vtable everything above calls, and the frame arithmetic |
+| `transport/` | `emrtd_transceiver` (the vtable everything above calls, and the frame arithmetic), `emrtd_isodep` (ISO 14443-4 block transmission, ours rather than the firmware's), `emrtd_iso14443_4` (the two pollers behind the port) |
 | `access/` | the driver interface, the registry, and one driver each for PACE and BAC |
 | `worker/` | `emrtd_worker` (the read, on the NFC stack's thread) and `emrtd_export` (the SD card) |
 | `views/` | `emrtd_read_view` (progress) and `emrtd_date_input` (a date as three fields) |
@@ -40,15 +40,45 @@ names a cipher - and they are free of everything above.
 ## The transceiver port
 
 Every layer that needs the chip calls `emrtd_transceiver_exchange()`, which
-is a vtable with a context pointer. On the device the implementation wraps
-the firmware's ISO 14443-4 poller; in the test suite it is a simulated chip
-that answers from a scripted set of files. Because the port is the only way
-down, the same PACE run that opens a real passport can be exercised on a host
-with a sanitizer attached.
+is a vtable with a context pointer. On the device the implementation is
+`transport/emrtd_iso14443_4.c`; in the test suite it is a simulated chip that
+answers from a scripted set of files. Because the port is the only way down,
+the same PACE run that opens a real passport can be exercised on a host with a
+sanitizer attached.
 
 The port also carries the two frame sizes - `fsc`, what the card announced in
 its ATS, and `fsd`, what the reader can receive - because on this platform
 those numbers decide how a file is read. See [protocol.md](protocol.md).
+
+### Why there is a second port underneath it
+
+On type A the implementation does not call the firmware's ISO 14443-4A poller.
+It drives the ISO 14443-3A poller and runs the block transmission protocol
+itself, in `transport/emrtd_isodep.c`, over a second and much smaller port:
+
+```c
+typedef EmrtdError (*EmrtdIsoDepFrameFn)(
+    void* context, const uint8_t* tx, size_t tx_len,
+    uint8_t* rx, size_t rx_cap, size_t* rx_len, uint32_t fwt_fc);
+```
+
+The last argument is the whole reason. `iso14443_4a_poller_send_block()` takes
+no timeout, and the one it computes internally collapses to 120 microseconds
+for any card whose ATS carries no TB1 - see items 10 to 12 of
+[platform.md](platform.md). A passport given 120 microseconds to answer does
+not answer, and the read fails in a way that looks exactly like a document
+being moved away.
+
+Splitting it at a frame function rather than at an APDU function is what makes
+the layer testable: `tests/host/test_isodep.c` drives it against a simulated
+chip that reassembles a chained command, chains its own answer, asks for
+waiting time extensions and drops frames on request. The timings, the block
+numbering and the recovery are all checked on the host, with sanitizers, and
+none of it needs a Flipper.
+
+Type B keeps the firmware's poller, whose waiting time comes from the ATQB and
+is correct. The two paths meet again at `EmrtdTransceiver`, so nothing above
+the transport knows which one is in use.
 
 ## Why the access drivers are a registry
 
@@ -171,6 +201,12 @@ cannot link or run anything, so it is no substitute for the real build - it
 exists to catch the one class of failure that otherwise only appears in CI.
 
 ### What the suite does not cover
+
+The block transmission layer is covered - `test_isodep.c` exercises it against
+a card-side simulation - but the poller lifecycle around it is not: which
+firmware events arrive in what order, and what `NfcCommandReset` does to a chip
+that has entered the ISO 14443-4 protocol state, are reasoned about from the
+firmware sources rather than executed here.
 
 `test_session.c` drives its own read loop, not `worker/emrtd_worker.c`. The
 worker is the one layer the host build cannot reach, because it is written

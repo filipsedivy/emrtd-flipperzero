@@ -6,16 +6,31 @@ the commands and the order taken from ICAO Doc 9303 parts 10 and 11.
 
 ## What the firmware does, and what is left to us
 
-The firmware's NFC stack finds the card, runs anticollision and activates
-ISO-DEP: RATS, the ATS, block numbering, chaining of *commands*, and the
-waiting time extensions a chip asks for while it is busy. What it does not do
-is reassemble a chained *response*, and that single fact shapes the whole
-read. See item 6 of [platform.md](platform.md) for how this was established.
+The firmware's NFC stack finds the card and runs anticollision and selection.
+Above that the two flavours are handled differently, and the reason is
+measured rather than stylistic.
+
+On **type A** this reader runs the block transmission protocol itself, in
+`transport/emrtd_isodep.c`: RATS and the ATS, block numbering, chaining in
+both directions, the waiting time extension a chip asks for while it does
+elliptic curve arithmetic, and retransmission of a block whose answer was
+lost. The firmware has all of that too, and it cannot be used, because it
+gives every block a frame waiting time of 120 microseconds whenever the card's
+ATS carries no TB1, allows the answer to RATS only 2.95 milliseconds, and
+exposes no way for an application to change either. Items 10 to 12 of
+[platform.md](platform.md) give the lines that establish it. A passport loses
+those races while lying perfectly still on the device, and the reader used to
+report that as a document that had been moved away.
+
+On **type B** the firmware's ISO 14443-4B poller is used unchanged. Its
+waiting time comes from the protocol info of the ATQB and is correct, and that
+path does not reassemble a chained response.
 
 The Flipper announces **FSD = 256** in RATS, which is the largest frame it
-will accept. A response that would not fit in one frame is chained by the
-card, and those further blocks do not come back to us. So no command may ever
-ask for more than one frame of data:
+will accept. A response longer than that is chained by the card. The type A
+path now follows such a chain, but the type B path cannot, so the reader
+continues to size every question so that the answer fits one frame - it costs
+nothing, and it keeps one rule for both flavours:
 
 ```c
 size_t emrtd_transceiver_max_le(const EmrtdTransceiver* transceiver, size_t block_size);

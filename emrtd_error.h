@@ -25,6 +25,7 @@ typedef enum {
     /* Transport and card */
     EmrtdErrorNoCard, /**< Nothing in the field. */
     EmrtdErrorCardLost, /**< The document moved away mid read. */
+    EmrtdErrorActivation, /**< The chip answered, but would not open a session. */
     EmrtdErrorTransport, /**< The RF exchange failed. */
     EmrtdErrorProtocol, /**< The card broke ISO 14443-4. */
     EmrtdErrorNotEmrtd, /**< The chip has no eMRTD application. */

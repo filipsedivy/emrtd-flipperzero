@@ -33,6 +33,11 @@ the whole reason this application exists.
 
 ## What it does
 
+- **Its own ISO-DEP layer** on type A: RATS, block numbering, chaining both
+  ways, waiting time extensions and retransmission. The firmware has all of
+  that, and it gives a card 120 microseconds to answer whenever the ATS carries
+  no TB1 - which no passport can meet, and which an application cannot change.
+  See [docs/platform.md](docs/platform.md), items 10 to 14.
 - **Access control**: PACE with the generic mapping over ECDH, and BAC over
   3DES. The driver is chosen from what the chip announces, with a fall back to
   the other if the first is refused.
@@ -54,6 +59,7 @@ held in memory: it goes to the SD card as it arrives, hashed on the way past.
 | --- | --- |
 | PACE-ECDH-GM, AES-128, AES-192, AES-256 | **yes** |
 | PACE curves: brainpoolP192r1..P256r1, NIST P-192..P-256 (parameter ids 8-13) | **yes** |
+| A frame waiting time the chip can actually meet | **yes** - the reader runs ISO-DEP itself on type A rather than using the firmware's poller |
 | PACE curves above 256 bits (ids 14-18) | **no** - `MBEDTLS_ECP_MAX_BITS` is 256 in the firmware's mbed TLS, and the curve is refused by name |
 | PACE over MODP/DH groups (ids 0-2) | **no** - `mbedtls_mpi_exp_mod` cannot be linked into an application, see [docs/platform.md](docs/platform.md) |
 | PACE with the integrated or chip authentication mapping | **no** - detected and refused by name |

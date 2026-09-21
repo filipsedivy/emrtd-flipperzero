@@ -44,6 +44,7 @@ APP_SRC := \
 	$(ROOT)/protocol/emrtd_lds.c \
 	$(ROOT)/protocol/emrtd_security_info.c \
 	$(ROOT)/transport/emrtd_transceiver.c \
+	$(ROOT)/transport/emrtd_isodep.c \
 	$(ROOT)/access/emrtd_access.c \
 	$(ROOT)/access/emrtd_access_bac.c \
 	$(ROOT)/access/emrtd_access_pace.c
@@ -56,6 +57,7 @@ TEST_SRC := \
 	test_ec.c \
 	test_tlv.c \
 	test_apdu.c \
+	test_isodep.c \
 	test_files.c \
 	test_mrz.c \
 	test_lds.c \
@@ -85,6 +87,11 @@ MBEDTLS_SRC := \
 
 CFLAGS ?= -O1 -g
 CFLAGS += -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function
+# Record which headers each object was built from, so that changing one
+# rebuilds what depends on it. Without this a change to emrtd_error.h leaves
+# objects holding the old enumerator values and the suite fails somewhere far
+# from the edit, which is a slow way to learn about a stale build.
+CFLAGS += -MMD -MP
 CFLAGS += -DEMRTD_HOST_BUILD=1
 CFLAGS += -DMBEDTLS_CONFIG_FILE='"flipper_mbedtls_cfg.h"'
 CFLAGS += -I. -Ilib -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/library
@@ -137,6 +144,8 @@ $(BUILD_DIR)/test_host_%.o: %.c | $(BUILD_DIR)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+-include $(MBEDTLS_OBJ:.o=.d) $(APP_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
 
 deps: $(MBEDTLS_DIR)/.stamp
 
@@ -191,6 +200,11 @@ config-drift:
 # that otherwise only appears in CI.
 GCC_CHECK ?= $(HOME)/.ufbt/toolchain/current/bin/arm-none-eabi-gcc
 
+# The object goes to /dev/null, so the dependency file would go to /dev/null.d,
+# which the system will not allow. Nothing here is being kept, so drop the
+# dependency generation for this pass.
+GCC_CHECK_CFLAGS := $(filter-out -MMD -MP,$(CFLAGS))
+
 gcc-check: deps
 	@if [ ! -x "$(GCC_CHECK)" ]; then \
 		echo "no GCC at $(GCC_CHECK); run ufbt once to deploy the toolchain,"; \
@@ -200,7 +214,7 @@ gcc-check: deps
 	@echo "checking $(words $(APP_SRC) $(TEST_SRC)) files with $$($(GCC_CHECK) -dumpversion)"
 	@fail=0; \
 	for f in $(APP_SRC) $(TEST_SRC); do \
-		if ! $(GCC_CHECK) -c -o /dev/null -O1 $(CFLAGS) -Werror "$$f" 2>/tmp/emrtd-gcc-check.log; then \
+		if ! $(GCC_CHECK) -c -o /dev/null -O1 $(GCC_CHECK_CFLAGS) -Werror "$$f" 2>/tmp/emrtd-gcc-check.log; then \
 			echo "--- $$f"; cat /tmp/emrtd-gcc-check.log; fail=1; \
 		fi; \
 	done; \

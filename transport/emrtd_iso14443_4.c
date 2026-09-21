@@ -5,11 +5,14 @@
 
 #include "emrtd_iso14443_4.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include <furi.h>
 #include <nfc/protocols/iso14443_3b/iso14443_3b.h>
 #include <toolbox/bit_buffer.h>
+
+#include "emrtd_isodep.h"
 
 #define TAG "EmrtdIso14443_4"
 
@@ -19,11 +22,17 @@
 /** ISO 14443-4 section 5.1: the frame size before the ATS has been read. */
 #define EMRTD_ISO14443_4_FSC_DEFAULT 32
 
+/** Carrier cycles per millisecond, for turning a waiting time into words. */
+#define EMRTD_ISO14443_4_FC_PER_MS 13560u
+
 struct EmrtdIso14443_4 {
     EmrtdTransceiver transceiver;
     EmrtdIso14443_4Variant variant;
-    Iso14443_4aPoller* poller_4a;
+    Iso14443_3aPoller* poller_3a;
     Iso14443_4bPoller* poller_4b;
+    EmrtdIsoDep isodep;
+    /* The last thing the radio said, kept so that a failure can name it. */
+    Iso14443_3aError last_error;
     BitBuffer* tx_buffer;
     BitBuffer* rx_buffer;
     EmrtdIso14443_4TraceCallback trace;
@@ -54,6 +63,15 @@ static const EmrtdTransceiverApi emrtd_iso14443_4_idle_api = {
     .transceive = emrtd_iso14443_4_transceive,
 };
 
+static EmrtdError emrtd_iso14443_4_frame(
+    void* context,
+    const uint8_t* tx,
+    size_t tx_len,
+    uint8_t* rx,
+    size_t rx_cap,
+    size_t* rx_len,
+    uint32_t fwt_fc);
+
 EmrtdIso14443_4* emrtd_iso14443_4_alloc(void) {
     EmrtdIso14443_4* instance = malloc(sizeof(EmrtdIso14443_4));
     memset(instance, 0, sizeof(EmrtdIso14443_4));
@@ -66,6 +84,8 @@ EmrtdIso14443_4* emrtd_iso14443_4_alloc(void) {
 
     instance->tx_buffer = bit_buffer_alloc(EMRTD_ISO14443_4_BUFFER_SIZE);
     instance->rx_buffer = bit_buffer_alloc(EMRTD_ISO14443_4_BUFFER_SIZE);
+
+    emrtd_isodep_init(&instance->isodep, emrtd_iso14443_4_frame, instance);
 
     return instance;
 }
@@ -81,10 +101,8 @@ void emrtd_iso14443_4_free(EmrtdIso14443_4* instance) {
 /**
  * Decide the card's frame size.
  *
- * The ATS carries FSCI only when it is longer than its own length byte; a
- * one byte ATS means the card keeps the ISO 14443-4 default. A card that
- * announces more than the reader can hold is capped, because the limit that
- * binds is whichever of the two is smaller.
+ * A card that announces more than the reader can hold is capped, because the
+ * limit that binds is whichever of the two is smaller.
  */
 static void emrtd_iso14443_4_set_fsc(EmrtdIso14443_4* instance, uint16_t fsc) {
     if(fsc < EMRTD_ISO14443_4_FSC_DEFAULT) {
@@ -96,25 +114,34 @@ static void emrtd_iso14443_4_set_fsc(EmrtdIso14443_4* instance, uint16_t fsc) {
     instance->transceiver.fsc = fsc;
 }
 
-void emrtd_iso14443_4_bind_4a(
-    EmrtdIso14443_4* instance,
-    Iso14443_4aPoller* poller,
-    const Iso14443_4aData* data) {
+EmrtdError emrtd_iso14443_4_bind_3a(EmrtdIso14443_4* instance, Iso14443_3aPoller* poller) {
     furi_check(instance);
     furi_check(poller);
 
-    instance->variant = EmrtdIso14443_4VariantA;
-    instance->poller_4a = poller;
+    instance->variant = EmrtdIso14443_4VariantNone;
+    instance->poller_3a = poller;
     instance->poller_4b = NULL;
-    instance->transceiver.api = &emrtd_iso14443_4a_api;
+    instance->transceiver.api = &emrtd_iso14443_4_idle_api;
+    emrtd_isodep_reset(&instance->isodep);
+    instance->last_error = Iso14443_3aErrorNone;
 
-    uint16_t fsc = EMRTD_ISO14443_4_FSC_DEFAULT;
-    if(data != NULL && data->ats_data.tl >= 2) {
-        fsc = emrtd_transceiver_fsc_from_fsci(data->ats_data.t0 & 0x0F);
+    const EmrtdError error = emrtd_isodep_activate(&instance->isodep);
+    if(error != EmrtdErrorNone) {
+        FURI_LOG_W(
+            TAG, "RATS failed: %s (radio said %d)", emrtd_error_text(error), instance->last_error);
+        instance->poller_3a = NULL;
+        return error;
     }
-    emrtd_iso14443_4_set_fsc(instance, fsc);
 
-    FURI_LOG_I(TAG, "Type A card, FSC %u", instance->transceiver.fsc);
+    instance->variant = EmrtdIso14443_4VariantA;
+    instance->transceiver.api = &emrtd_iso14443_4a_api;
+    emrtd_iso14443_4_set_fsc(instance, emrtd_isodep_fsc(&instance->isodep));
+
+    char description[96];
+    emrtd_iso14443_4_describe(instance, description, sizeof(description));
+    FURI_LOG_I(TAG, "%s", description);
+
+    return EmrtdErrorNone;
 }
 
 void emrtd_iso14443_4_bind_4b(
@@ -125,7 +152,7 @@ void emrtd_iso14443_4_bind_4b(
     furi_check(poller);
 
     instance->variant = EmrtdIso14443_4VariantB;
-    instance->poller_4a = NULL;
+    instance->poller_3a = NULL;
     instance->poller_4b = poller;
     instance->transceiver.api = &emrtd_iso14443_4b_api;
 
@@ -146,17 +173,24 @@ void emrtd_iso14443_4_bind_4b(
     }
     emrtd_iso14443_4_set_fsc(instance, fsc);
 
-    FURI_LOG_I(TAG, "Type B card, FSC %u", instance->transceiver.fsc);
+    char description[96];
+    emrtd_iso14443_4_describe(instance, description, sizeof(description));
+    FURI_LOG_I(TAG, "%s", description);
 }
 
 void emrtd_iso14443_4_unbind(EmrtdIso14443_4* instance) {
     furi_check(instance);
 
+    if(instance->variant == EmrtdIso14443_4VariantA && instance->poller_3a != NULL) {
+        emrtd_isodep_deselect(&instance->isodep);
+    }
+
     instance->variant = EmrtdIso14443_4VariantNone;
-    instance->poller_4a = NULL;
+    instance->poller_3a = NULL;
     instance->poller_4b = NULL;
     instance->transceiver.api = &emrtd_iso14443_4_idle_api;
     instance->transceiver.fsc = EMRTD_ISO14443_4_FSC_DEFAULT;
+    emrtd_isodep_reset(&instance->isodep);
     bit_buffer_reset(instance->tx_buffer);
     bit_buffer_reset(instance->rx_buffer);
 }
@@ -173,6 +207,46 @@ EmrtdIso14443_4Variant emrtd_iso14443_4_variant(const EmrtdIso14443_4* instance)
     return instance->variant;
 }
 
+void emrtd_iso14443_4_describe(const EmrtdIso14443_4* instance, char* out, size_t out_size) {
+    if(out == NULL || out_size == 0) {
+        return;
+    }
+    if(instance == NULL || instance->variant == EmrtdIso14443_4VariantNone) {
+        snprintf(out, out_size, "no card bound");
+        return;
+    }
+
+    if(instance->variant == EmrtdIso14443_4VariantB) {
+        snprintf(out, out_size, "Type B card, FSC %u", instance->transceiver.fsc);
+        return;
+    }
+
+    /*
+     * The ATS is the one piece of evidence that explains a read which fails
+     * on a document that has not moved: it carries FWI, and a card that names
+     * none is the case the firmware's own poller gets wrong.
+     */
+    char ats_hex[2 * EMRTD_ISODEP_ATS_MAX + 1] = "none";
+    size_t ats_len = 0;
+    const uint8_t* ats = emrtd_isodep_ats(&instance->isodep, &ats_len);
+    if(ats != NULL && ats_len > 0) {
+        size_t pos = 0;
+        for(size_t i = 0; i < ats_len && pos + 3 <= sizeof(ats_hex); i++) {
+            pos += (size_t)snprintf(ats_hex + pos, sizeof(ats_hex) - pos, "%02X", ats[i]);
+        }
+    }
+
+    snprintf(
+        out,
+        out_size,
+        "Type A card, FSC %u, FWI %u%s, waiting %lu ms, ATS %s",
+        instance->transceiver.fsc,
+        instance->isodep.fwi,
+        instance->isodep.fwi_announced ? "" : " (assumed)",
+        (unsigned long)(instance->isodep.fwt_fc / EMRTD_ISO14443_4_FC_PER_MS),
+        ats_hex);
+}
+
 void emrtd_iso14443_4_set_trace(
     EmrtdIso14443_4* instance,
     EmrtdIso14443_4TraceCallback callback,
@@ -183,15 +257,26 @@ void emrtd_iso14443_4_set_trace(
     instance->trace_context = context;
 }
 
-static EmrtdError emrtd_iso14443_4_map_error_a(Iso14443_4aError error) {
+/**
+ * What a radio level failure means to the layers above.
+ *
+ * A timeout is the honest "the chip went quiet" signal; everything else is a
+ * fault of the link rather than a statement about the document, and saying so
+ * keeps "the document moved away" for the case that really is that.
+ */
+static EmrtdError emrtd_iso14443_4_map_error_3a(Iso14443_3aError error) {
     switch(error) {
-    case Iso14443_4aErrorNone:
+    case Iso14443_3aErrorNone:
         return EmrtdErrorNone;
-    case Iso14443_4aErrorNotPresent:
-    case Iso14443_4aErrorTimeout:
+    case Iso14443_3aErrorTimeout:
+    case Iso14443_3aErrorNotPresent:
         return EmrtdErrorCardLost;
-    case Iso14443_4aErrorProtocol:
-        return EmrtdErrorProtocol;
+    case Iso14443_3aErrorBufferOverflow:
+        return EmrtdErrorBufferTooSmall;
+    case Iso14443_3aErrorWrongCrc:
+    case Iso14443_3aErrorCommunication:
+    case Iso14443_3aErrorFieldOff:
+    case Iso14443_3aErrorColResFailed:
     default:
         return EmrtdErrorTransport;
     }
@@ -211,7 +296,60 @@ static EmrtdError emrtd_iso14443_4_map_error_b(Iso14443_4bError error) {
     }
 }
 
-/** Largest command data field that fits one frame towards the card. */
+/** Put one bare frame on the wire for the ISO-DEP layer above. */
+static EmrtdError emrtd_iso14443_4_frame(
+    void* context,
+    const uint8_t* tx,
+    size_t tx_len,
+    uint8_t* rx,
+    size_t rx_cap,
+    size_t* rx_len,
+    uint32_t fwt_fc) {
+    EmrtdIso14443_4* instance = context;
+    *rx_len = 0;
+
+    if(instance == NULL || instance->poller_3a == NULL) {
+        return EmrtdErrorInternal;
+    }
+    /*
+     * The poller appends the CRC inside its own buffer, and overflowing a
+     * BitBuffer aborts the application rather than failing, so the room it
+     * will need is checked here instead of assumed.
+     */
+    if(tx_len == 0 || tx_len + 2 > bit_buffer_get_capacity_bytes(instance->tx_buffer)) {
+        return EmrtdErrorBufferTooSmall;
+    }
+
+    bit_buffer_reset(instance->tx_buffer);
+    bit_buffer_append_bytes(instance->tx_buffer, tx, tx_len);
+    bit_buffer_reset(instance->rx_buffer);
+
+    const Iso14443_3aError error = iso14443_3a_poller_send_standard_frame(
+        instance->poller_3a, instance->tx_buffer, instance->rx_buffer, fwt_fc);
+    instance->last_error = error;
+    if(error != Iso14443_3aErrorNone) {
+        FURI_LOG_D(TAG, "Frame of %zu bytes failed, radio error %d", tx_len, error);
+        return emrtd_iso14443_4_map_error_3a(error);
+    }
+
+    if(bit_buffer_has_partial_byte(instance->rx_buffer)) {
+        return EmrtdErrorProtocol;
+    }
+
+    const size_t received = bit_buffer_get_size_bytes(instance->rx_buffer);
+    if(received == 0) {
+        return EmrtdErrorProtocol;
+    }
+    if(received > rx_cap) {
+        return EmrtdErrorBufferTooSmall;
+    }
+
+    bit_buffer_write_bytes(instance->rx_buffer, rx, received);
+    *rx_len = received;
+    return EmrtdErrorNone;
+}
+
+/** Largest command data field that fits one type B frame towards the card. */
 static size_t emrtd_iso14443_4_max_inf(const EmrtdIso14443_4* instance) {
     size_t fsc = instance->transceiver.fsc;
     if(fsc < EMRTD_ISO14443_4_FRAME_OVERHEAD + 1) {
@@ -225,42 +363,48 @@ static size_t emrtd_iso14443_4_max_inf(const EmrtdIso14443_4* instance) {
     return inf;
 }
 
-/**
- * Put one block on the wire.
- *
- * iso14443_4a_poller_send_block() answers S(WTX) on its own, which a chip
- * doing several seconds of elliptic curve arithmetic will ask for, so the
- * waiting time extension needs no handling here.
- */
-static EmrtdError emrtd_iso14443_4_send_block(
+/** One APDU over the type B poller, which owns the block protocol itself. */
+static EmrtdError emrtd_iso14443_4_transceive_b(
     EmrtdIso14443_4* instance,
-    const uint8_t* data,
-    size_t len,
-    bool chaining) {
-    if(bit_buffer_get_capacity_bytes(instance->tx_buffer) < len) {
+    const uint8_t* tx,
+    size_t tx_len,
+    uint8_t* rx,
+    size_t rx_cap,
+    size_t* rx_len) {
+    /*
+     * The type B poller has no chaining helper, so a command that does not fit
+     * one frame is refused rather than silently truncated.
+     */
+    if(tx_len > emrtd_iso14443_4_max_inf(instance)) {
+        FURI_LOG_W(TAG, "Command of %zu bytes exceeds the type B frame size", tx_len);
+        return EmrtdErrorProtocol;
+    }
+    if(bit_buffer_get_capacity_bytes(instance->tx_buffer) < tx_len) {
         return EmrtdErrorBufferTooSmall;
     }
 
     bit_buffer_reset(instance->tx_buffer);
-    bit_buffer_append_bytes(instance->tx_buffer, data, len);
+    bit_buffer_append_bytes(instance->tx_buffer, tx, tx_len);
     bit_buffer_reset(instance->rx_buffer);
 
-    if(instance->variant == EmrtdIso14443_4VariantA) {
-        const Iso14443_4aError error =
-            chaining ? iso14443_4a_poller_send_chain_block(
-                           instance->poller_4a, instance->tx_buffer, instance->rx_buffer) :
-                       iso14443_4a_poller_send_block(
-                           instance->poller_4a, instance->tx_buffer, instance->rx_buffer);
-        return emrtd_iso14443_4_map_error_a(error);
-    }
-
-    /*
-     * The type B poller has no chaining helper, so a command that does not fit
-     * one frame is refused above rather than silently truncated here.
-     */
     const Iso14443_4bError error = iso14443_4b_poller_send_block(
         instance->poller_4b, instance->tx_buffer, instance->rx_buffer);
-    return emrtd_iso14443_4_map_error_b(error);
+    if(error != Iso14443_4bErrorNone) {
+        FURI_LOG_W(TAG, "Type B block failed, radio error %d", error);
+        return emrtd_iso14443_4_map_error_b(error);
+    }
+
+    if(bit_buffer_has_partial_byte(instance->rx_buffer)) {
+        return EmrtdErrorProtocol;
+    }
+
+    const size_t received = bit_buffer_get_size_bytes(instance->rx_buffer);
+    if(received > rx_cap) {
+        return EmrtdErrorBufferTooSmall;
+    }
+    bit_buffer_write_bytes(instance->rx_buffer, rx, received);
+    *rx_len = received;
+    return EmrtdErrorNone;
 }
 
 static EmrtdError emrtd_iso14443_4_transceive(
@@ -289,50 +433,22 @@ static EmrtdError emrtd_iso14443_4_transceive(
         instance->trace(instance->trace_context, true, tx, tx_len);
     }
 
-    const size_t max_inf = emrtd_iso14443_4_max_inf(instance);
-    if(tx_len > max_inf && instance->variant != EmrtdIso14443_4VariantA) {
-        FURI_LOG_W(TAG, "Command of %zu bytes exceeds the type B frame size", tx_len);
-        return EmrtdErrorProtocol;
+    const EmrtdError error =
+        instance->variant == EmrtdIso14443_4VariantA ?
+            emrtd_isodep_transceive(&instance->isodep, tx, tx_len, rx, rx_cap, rx_len) :
+            emrtd_iso14443_4_transceive_b(instance, tx, tx_len, rx, rx_cap, rx_len);
+    if(error != EmrtdErrorNone) {
+        return error;
     }
 
-    /*
-     * ISO 14443-4 section 7.5.2: a command longer than the card's frame size
-     * goes out as a run of chained I-blocks, each acknowledged with an R(ACK),
-     * and only the last one carries the chaining bit clear and brings back the
-     * response.
-     */
-    size_t sent = 0;
-    while(sent < tx_len) {
-        const size_t remaining = tx_len - sent;
-        const size_t block = remaining > max_inf ? max_inf : remaining;
-        const bool last = (sent + block) == tx_len;
-
-        const EmrtdError error = emrtd_iso14443_4_send_block(instance, tx + sent, block, !last);
-        if(error != EmrtdErrorNone) {
-            FURI_LOG_W(TAG, "Block at offset %zu failed: %d", sent, error);
-            return error;
-        }
-        sent += block;
-    }
-
-    if(bit_buffer_has_partial_byte(instance->rx_buffer)) {
-        return EmrtdErrorProtocol;
-    }
-
-    const size_t received = bit_buffer_get_size_bytes(instance->rx_buffer);
     /* Even a bare status word is two bytes; anything shorter is not an APDU. */
-    if(received < 2) {
+    if(*rx_len < 2) {
+        *rx_len = 0;
         return EmrtdErrorProtocol;
     }
-    if(received > rx_cap) {
-        return EmrtdErrorBufferTooSmall;
-    }
-
-    bit_buffer_write_bytes(instance->rx_buffer, rx, received);
-    *rx_len = received;
 
     if(instance->trace != NULL) {
-        instance->trace(instance->trace_context, false, rx, received);
+        instance->trace(instance->trace_context, false, rx, *rx_len);
     }
 
     return EmrtdErrorNone;

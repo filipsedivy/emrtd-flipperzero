@@ -10,9 +10,11 @@
  * directly. It calls through this port.
  *
  * Frame sizes are not a detail that can be guessed. The Flipper announces
- * FSD = 256 bytes in RATS and its ISO 14443-4 layer does not reassemble a
- * chained response, so a command whose answer would exceed that frame has to
- * be split by us - see docs/platform.md. @c fsc is what the card announced it
+ * FSD = 256 bytes in RATS, and on type B the firmware's ISO 14443-4 layer does
+ * not reassemble a chained response, so a command whose answer would exceed
+ * one frame has to be split by us. The type A path does reassemble one, since
+ * it owns the protocol (see emrtd_isodep.h), but the limit is kept for both so
+ * that there is one rule rather than two. @c fsc is what the card announced it
  * can receive, @c fsd what the reader can, and emrtd_transceiver_max_le()
  * turns the pair into the largest Le that is safe to ask for.
  */

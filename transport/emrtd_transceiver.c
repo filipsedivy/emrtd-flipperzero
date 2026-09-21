@@ -97,10 +97,11 @@ size_t emrtd_transceiver_max_le(const EmrtdTransceiver* transceiver, size_t bloc
 
     /*
      * The response travels from the card to the reader, so it is the reader's
-     * own frame size that bounds it. The Flipper announces FSD = 256 in RATS
-     * and its ISO 14443-4 layer does not reassemble a chained response, which
-     * is why this has to be respected rather than merely preferred; see
-     * docs/platform.md.
+     * own frame size that bounds it. The Flipper announces FSD = 256 in RATS.
+     * On type B the firmware's ISO 14443-4 layer does not reassemble a chained
+     * response, so this has to be respected rather than merely preferred; on
+     * type A the reader follows the chain itself, and the bound is kept anyway
+     * because a shorter exchange is a more robust one. See docs/platform.md.
      */
     size_t budget = emrtd_frame_payload(transceiver->fsd);
 

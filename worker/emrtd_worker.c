@@ -13,7 +13,7 @@
 #include <mbedtls/sha256.h>
 #include <nfc/nfc.h>
 #include <nfc/nfc_poller.h>
-#include <nfc/protocols/iso14443_4a/iso14443_4a_poller.h>
+#include <nfc/protocols/iso14443_3a/iso14443_3a_poller.h>
 #include <nfc/protocols/iso14443_4b/iso14443_4b_poller.h>
 
 #include "../crypto/emrtd_crypto.h"
@@ -52,11 +52,20 @@
 #define EMRTD_WORKER_FILE_SIZE_MAX (64u * 1024u)
 
 /**
- * Consecutive activation failures before the document is declared gone.
+ * Consecutive activation failures before the reader gives up.
  *
- * Both ISO 14443-3 pollers wait 100 ms after a failed activation, so this is
- * about two seconds - long enough for a hand to settle the document back onto
- * the reader, short enough not to look like a hang.
+ * Every round costs about a tenth of a second whichever way it fails: the
+ * ISO 14443-3 pollers delay that long after a failed activation, and a round
+ * that fails at RATS answers NfcCommandReset, which cycles the field for the
+ * same order of time. So this is roughly two seconds - long enough for a hand
+ * to settle the document back onto the reader, short enough not to look like
+ * a hang.
+ *
+ * The field has to be cycled rather than merely retried, and that is not
+ * belt and braces: a chip that answered RATS has entered the ISO 14443-4
+ * protocol state, where it ignores both WUPA and HLTA and answers only
+ * I-, R- and S-blocks. Dropping the carrier is the only way back to idle, and
+ * without it every remaining attempt is guaranteed to fail.
  */
 #define EMRTD_WORKER_ACTIVATION_RETRIES 20
 
@@ -141,6 +150,8 @@ struct EmrtdWorker {
     size_t files_total;
     size_t files_done;
     uint8_t activation_failures;
+    /** Why the last activation round failed, for the screen when they run out. */
+    EmrtdError activation_error;
 };
 
 /* --- Stage names -------------------------------------------------------- */
@@ -1544,7 +1555,13 @@ static NfcCommand emrtd_worker_finish(EmrtdWorker* worker) {
 /**
  * Drive the read from the poller's Ready event.
  *
- * The callback may only answer Continue or Stop. Stopping the poller from
+ * On type A the Ready event means anticollision and selection are done, and
+ * nothing more: RATS is sent from emrtd_iso14443_4_bind_3a(), because the
+ * waiting times the firmware's own ISO 14443-4A poller uses are too short for
+ * a passport. So on that path the session is opened here, and failing to open
+ * it is an ordinary activation failure rather than a dead read.
+ *
+ * The callback may answer Continue, Reset or Stop. Stopping the poller from
  * inside it would have the NFC thread wait for itself, so the flag above is
  * set and the control thread does the stopping.
  */
@@ -1557,15 +1574,22 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
     }
 
     bool ready = false;
+    bool type_a = false;
 
-    if(event.protocol == NfcProtocolIso14443_4a) {
-        const Iso14443_4aPollerEvent* data = event.event_data;
-        if(data->type == Iso14443_4aPollerEventTypeReady) {
-            emrtd_iso14443_4_bind_4a(
-                worker->transport,
-                event.instance,
-                (const Iso14443_4aData*)nfc_poller_get_data(worker->poller));
-            ready = true;
+    if(event.protocol == NfcProtocolIso14443_3a) {
+        type_a = true;
+        const Iso14443_3aPollerEvent* data = event.event_data;
+        if(data->type == Iso14443_3aPollerEventTypeReady) {
+            const EmrtdError error = emrtd_iso14443_4_bind_3a(worker->transport, event.instance);
+            ready = error == EmrtdErrorNone;
+            /*
+             * The chip answered the anticollision a moment ago, so it is
+             * there; what failed was the step that opens an ISO 14443-4
+             * session with it.
+             */
+            worker->activation_error = ready ? EmrtdErrorNone : EmrtdErrorActivation;
+        } else {
+            worker->activation_error = EmrtdErrorCardLost;
         }
     } else if(event.protocol == NfcProtocolIso14443_4b) {
         const Iso14443_4bPollerEvent* data = event.event_data;
@@ -1575,6 +1599,8 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
                 event.instance,
                 (const Iso14443_4bData*)nfc_poller_get_data(worker->poller));
             ready = true;
+        } else {
+            worker->activation_error = EmrtdErrorCardLost;
         }
     } else {
         worker->result.error = EmrtdErrorProtocol;
@@ -1582,15 +1608,18 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
     }
 
     if(!ready) {
-        /*
-         * The event data of an activation failure is only filled in for some
-         * of the paths that produce one, so the count is what decides. The
-         * chip answered detection a moment ago, which means it supports
-         * ISO 14443-4; failing to activate it now says it has been moved away.
-         */
         worker->activation_failures++;
+        FURI_LOG_W(
+            TAG,
+            "Activation attempt %u of %u failed: %s",
+            worker->activation_failures,
+            (unsigned)EMRTD_WORKER_ACTIVATION_RETRIES,
+            emrtd_error_text(worker->activation_error));
+
         if(worker->activation_failures >= EMRTD_WORKER_ACTIVATION_RETRIES) {
-            worker->result.error = EmrtdErrorCardLost;
+            worker->result.error = worker->activation_error != EmrtdErrorNone ?
+                                       worker->activation_error :
+                                       EmrtdErrorActivation;
             return emrtd_worker_finish(worker);
         }
         /*
@@ -1602,13 +1631,31 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
             emrtd_worker_report(
                 worker, EmrtdWorkerStageWaitingForCard, EmrtdFileCom, 0, 0, 0, NULL);
         }
-        return NfcCommandContinue;
+        /*
+         * Reset drops the carrier for a moment, which is what puts a chip
+         * that has already entered the ISO 14443-4 protocol state back where
+         * anticollision can find it. The type B poller has no Reset branch,
+         * so it is asked only to carry on.
+         */
+        return type_a ? NfcCommandReset : NfcCommandContinue;
     }
 
     worker->activation_failures = 0;
+    worker->activation_error = EmrtdErrorNone;
     worker->transceiver = emrtd_iso14443_4_transceiver(worker->transport);
     if(worker->export_ctx != NULL && worker->config.write_trace) {
         emrtd_iso14443_4_set_trace(worker->transport, emrtd_worker_trace, worker);
+
+        /*
+         * The card's own timing parameters head the trace, because they are
+         * the first thing worth knowing about a read that failed on a
+         * document which never moved.
+         */
+        char description[96];
+        emrtd_iso14443_4_describe(worker->transport, description, sizeof(description));
+        char note[112];
+        snprintf(note, sizeof(note), "  (%s)", description);
+        emrtd_export_trace_note(worker->export_ctx, note);
     }
 
     emrtd_worker_read(worker);
@@ -1647,30 +1694,41 @@ static int32_t emrtd_worker_thread(void* context) {
 
     emrtd_worker_report(worker, EmrtdWorkerStageWaitingForCard, EmrtdFileCom, 0, 0, 0, NULL);
 
-    NfcProtocol protocol = NfcProtocolInvalid;
+    /*
+     * Detection and the read are not run over the same poller. Detecting with
+     * the type A poller is worth it because that is what looks at the select
+     * acknowledge and says whether the card speaks ISO 14443-4 at all, and it
+     * does so without sending RATS. The read then runs over the type 3A
+     * poller, so that the block transmission protocol - and with it the frame
+     * waiting time a passport needs - belongs to this application. See
+     * transport/emrtd_isodep.c.
+     */
+    NfcProtocol detected = NfcProtocolInvalid;
     while(!worker->stop_requested) {
         if(emrtd_worker_detect(worker, NfcProtocolIso14443_4a)) {
-            protocol = NfcProtocolIso14443_4a;
+            detected = NfcProtocolIso14443_4a;
             break;
         }
         if(worker->stop_requested) {
             break;
         }
         if(emrtd_worker_detect(worker, NfcProtocolIso14443_4b)) {
-            protocol = NfcProtocolIso14443_4b;
+            detected = NfcProtocolIso14443_4b;
             break;
         }
         furi_delay_ms(EMRTD_WORKER_DETECT_PAUSE_MS);
     }
 
-    if(protocol == NfcProtocolInvalid) {
+    if(detected == NfcProtocolInvalid) {
         worker->result.error = EmrtdErrorCancelled;
         emrtd_worker_report(worker, EmrtdWorkerStageError, EmrtdFileCom, 0, 0, 0, NULL);
         return 0;
     }
 
-    FURI_LOG_I(
-        TAG, "Detected %s", protocol == NfcProtocolIso14443_4a ? "ISO 14443-4A" : "ISO 14443-4B");
+    const bool type_a = detected == NfcProtocolIso14443_4a;
+    const NfcProtocol protocol = type_a ? NfcProtocolIso14443_3a : NfcProtocolIso14443_4b;
+
+    FURI_LOG_I(TAG, "Detected %s", type_a ? "ISO 14443-4A" : "ISO 14443-4B");
 
     if(worker->config.export_to_sd || worker->config.write_trace) {
         worker->export_ctx = emrtd_export_alloc(

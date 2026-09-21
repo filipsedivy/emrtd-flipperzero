@@ -34,7 +34,8 @@ that matches it.
 | What the screen says | What happened | What to try |
 | --- | --- | --- |
 | **No document found** | Nothing answered in the field. | Lay the Flipper flat on the open data page, over the middle. If nothing answers, try the closed book with the back cover against the device: the chip is in one place or the other. Take the document out of any case and move a phone or a second card away. |
-| **The document moved away** | The chip stopped answering part way through. | Hold both still until the progress bar fills. DG2 takes several seconds on its own. |
+| **The document moved away** | The chip stopped answering part way through, and did not answer the retries either. | Hold both still until the progress bar fills. DG2 takes several seconds on its own. |
+| **The chip will not open a session** | The document answered the scan, and then would not complete RATS. | Lift the Flipper clear, lay it back on the data page and read again. If it fails every time, send a trace: the first line names the card's frame size and waiting time, which is what this failure is about. |
 | **Radio exchange failed** | A frame did not come back. | The same as above. If it happens at the same point every time, the trace shows where. |
 | **The chip broke the protocol** | The answer did not fit ISO 14443-4. | Usually a marginal field rather than a faulty chip: move the document a little and read again. If it persists, attach a trace to a report. |
 | **Not an electronic passport** | The chip answered but carries no eMRTD application. | Bank cards, transport cards and access badges all answer, and none of them carry the application identifier `A0 00 00 02 47 10 01`. |
@@ -71,6 +72,22 @@ line as well; what follows here is the background the screen has no room for.
 | `6A86` | Incorrect parameters P1-P2 |
 | `6C xx` | Wrong length; the chip will accept `xx` bytes |
 | `6D00`, `6E00` | Instruction or class not supported |
+
+## "The document moved away" when nothing moved
+
+This used to be the common case and it was the reader's fault, not the
+document's. Up to version 1.0 the read ran over the firmware's ISO 14443-4A
+poller, which gives a card 120 microseconds to answer every block when its ATS
+carries no TB1, and 2.95 milliseconds to answer RATS. Neither is enough for a
+passport, neither is reachable from an application, and both failures arrive
+as a timeout - which the reader reported as a document that had been taken
+away. Since then the reader runs the block transmission protocol itself and
+chooses its own waiting time, 295 milliseconds by default. Items 10 to 14 of
+[platform.md](platform.md) have the detail.
+
+So on a current build this message means what it says. If it still appears
+with the document lying still, the trace is worth having: its first line
+carries the ATS and the waiting time that was armed.
 
 ## The chip does not answer at all
 

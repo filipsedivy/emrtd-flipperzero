@@ -38,6 +38,13 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
          "The chip lost the field before the read finished. Nothing was damaged: put the "
          "document back and start again, keeping both still until the progress bar fills."},
 
+    [EmrtdErrorActivation] =
+        {"The chip will not open a session",
+         "The document answered when the reader looked for it, and then would not start "
+         "an ISO 14443-4 session. Lift the Flipper away, lay it back on the data page and "
+         "read again. If it fails every time, send a trace: the card's own timing "
+         "parameters head the file and they say what the chip asked for."},
+
     [EmrtdErrorTransport] =
         {"Radio exchange failed",
          "A frame did not come back. Metal in a wallet, a phone underneath, or a second "
