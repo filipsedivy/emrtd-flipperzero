@@ -45,6 +45,19 @@
 /** Frame waiting time index a card is assumed to want when it names none. */
 #define EMRTD_ISODEP_FWI_DEFAULT 4
 
+/**
+ * Start-up frame guard time, ISO/IEC 14443-4 section 5.2.5.
+ *
+ * SFGT is (256 x 16 / fc) x 2^SFGI, which is 4096 carrier cycles shifted by
+ * SFGI. At 13.56 MHz one such unit is 302.06 microseconds; the numerator below
+ * is that in nanoseconds so that the arithmetic stays in integers and rounds
+ * the right way. SFGI 0 means no guard time is needed at all.
+ */
+#define EMRTD_ISODEP_SFGT_UNIT_NS 302065u
+
+/** SFGI 15 is reserved; 14 is the largest the standard defines. */
+#define EMRTD_ISODEP_SFGI_MAX 14
+
 /** FWI 15 is reserved; 14 is the largest the standard defines. */
 #define EMRTD_ISODEP_FWI_MAX 14
 
@@ -116,12 +129,32 @@ static size_t emrtd_isodep_inf_capacity(const EmrtdIsoDep* instance) {
     return inf;
 }
 
-void emrtd_isodep_init(EmrtdIsoDep* instance, EmrtdIsoDepFrameFn send, void* context) {
+/** The wait a card's SFGI asks for, in whole milliseconds, margin included. */
+static uint32_t emrtd_isodep_sfgt_from_sfgi(uint8_t sfgi) {
+    if(sfgi == 0) {
+        /* No guard time asked for, so none is taken. */
+        return 0;
+    }
+    if(sfgi > EMRTD_ISODEP_SFGI_MAX) {
+        sfgi = EMRTD_ISODEP_SFGI_MAX;
+    }
+    const uint64_t ns = (uint64_t)EMRTD_ISODEP_SFGT_UNIT_NS << sfgi;
+    /* Round up to the millisecond, then add the margin. */
+    const uint32_t ms = (uint32_t)((ns + 999999u) / 1000000u);
+    return ms + EMRTD_ISODEP_SFGT_MARGIN_MS;
+}
+
+void emrtd_isodep_init(
+    EmrtdIsoDep* instance,
+    EmrtdIsoDepFrameFn send,
+    EmrtdIsoDepDelayFn delay,
+    void* context) {
     if(instance == NULL) {
         return;
     }
     memset(instance, 0, sizeof(*instance));
     instance->send = send;
+    instance->delay = delay;
     instance->context = context;
     instance->fsc = EMRTD_ISODEP_FSC_DEFAULT;
     instance->fwi = EMRTD_ISODEP_FWI_DEFAULT;
@@ -133,8 +166,9 @@ void emrtd_isodep_reset(EmrtdIsoDep* instance) {
         return;
     }
     EmrtdIsoDepFrameFn send = instance->send;
+    EmrtdIsoDepDelayFn delay = instance->delay;
     void* context = instance->context;
-    emrtd_isodep_init(instance, send, context);
+    emrtd_isodep_init(instance, send, delay, context);
 }
 
 void emrtd_isodep_parse_ats(EmrtdIsoDep* instance, const uint8_t* ats, size_t len) {
@@ -145,6 +179,7 @@ void emrtd_isodep_parse_ats(EmrtdIsoDep* instance, const uint8_t* ats, size_t le
     instance->fsc = EMRTD_ISODEP_FSC_DEFAULT;
     instance->fwi = EMRTD_ISODEP_FWI_DEFAULT;
     instance->fwi_announced = false;
+    instance->sfgi = 0;
     instance->ats_len = 0;
 
     if(ats != NULL && len > 0) {
@@ -171,7 +206,13 @@ void emrtd_isodep_parse_ats(EmrtdIsoDep* instance, const uint8_t* ats, size_t le
                 index++; /* TA(1) carries the bit rates, which are not changed. */
             }
             if((t0 & 0x20) && index < body) {
+                /*
+                 * One byte carries both: the frame waiting time index in the
+                 * high nibble and the start-up guard time index in the low
+                 * one. The firmware reads the first and ignores the second.
+                 */
                 instance->fwi = (uint8_t)(ats[index] >> 4);
+                instance->sfgi = (uint8_t)(ats[index] & 0x0F);
                 instance->fwi_announced = true;
                 index++;
             }
@@ -191,6 +232,7 @@ void emrtd_isodep_parse_ats(EmrtdIsoDep* instance, const uint8_t* ats, size_t le
         instance->fsc = 16;
     }
     instance->fwt_fc = emrtd_isodep_fwt_from_fwi(instance->fwi);
+    instance->sfgt_ms = emrtd_isodep_sfgt_from_sfgi(instance->sfgi);
 }
 
 /**
@@ -312,6 +354,20 @@ EmrtdError emrtd_isodep_activate(EmrtdIsoDep* instance) {
     }
 
     emrtd_isodep_parse_ats(instance, instance->rx_frame, received);
+
+    /*
+     * The card has just told us how long it needs before it is ready to be
+     * spoken to. A travel document is starting an operating system, and the
+     * guard time it asks for is measured in milliseconds rather than
+     * microseconds; a reader that ignores it sends its first command into a
+     * chip that is not listening. Nothing in the Flipper firmware waits here,
+     * which is why the failure this prevents looked like a card that had been
+     * taken away.
+     */
+    if(instance->sfgt_ms > 0 && instance->delay != NULL) {
+        instance->delay(instance->context, instance->sfgt_ms);
+    }
+
     instance->activated = true;
     return EmrtdErrorNone;
 }
@@ -443,6 +499,10 @@ void emrtd_isodep_deselect(EmrtdIsoDep* instance) {
     (void)emrtd_isodep_send_raw(
         instance, deselect, sizeof(deselect), instance->fwt_fc, 1, &received);
     instance->activated = false;
+}
+
+uint32_t emrtd_isodep_sfgt_ms(const EmrtdIsoDep* instance) {
+    return instance != NULL ? instance->sfgt_ms : 0;
 }
 
 uint16_t emrtd_isodep_fsc(const EmrtdIsoDep* instance) {

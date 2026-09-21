@@ -72,6 +72,18 @@ static EmrtdError emrtd_iso14443_4_frame(
     size_t* rx_len,
     uint32_t fwt_fc);
 
+/**
+ * Leave the card alone for a moment, because it asked.
+ *
+ * This blocks the NFC thread inside the poller callback, which is where the
+ * whole read runs anyway: the field stays on, the card stays selected, and
+ * ISO 14443-4 gives a card no reason to mind a reader that is quiet.
+ */
+static void emrtd_iso14443_4_delay(void* context, uint32_t ms) {
+    UNUSED(context);
+    furi_delay_ms(ms);
+}
+
 EmrtdIso14443_4* emrtd_iso14443_4_alloc(void) {
     EmrtdIso14443_4* instance = malloc(sizeof(EmrtdIso14443_4));
     memset(instance, 0, sizeof(EmrtdIso14443_4));
@@ -85,7 +97,7 @@ EmrtdIso14443_4* emrtd_iso14443_4_alloc(void) {
     instance->tx_buffer = bit_buffer_alloc(EMRTD_ISO14443_4_BUFFER_SIZE);
     instance->rx_buffer = bit_buffer_alloc(EMRTD_ISO14443_4_BUFFER_SIZE);
 
-    emrtd_isodep_init(&instance->isodep, emrtd_iso14443_4_frame, instance);
+    emrtd_isodep_init(&instance->isodep, emrtd_iso14443_4_frame, emrtd_iso14443_4_delay, instance);
 
     return instance;
 }
@@ -239,12 +251,40 @@ void emrtd_iso14443_4_describe(const EmrtdIso14443_4* instance, char* out, size_
     snprintf(
         out,
         out_size,
-        "Type A card, FSC %u, FWI %u%s, waiting %lu ms, ATS %s",
+        "Type A, FSC %u, FWI %u%s waiting %lu ms, SFGI %u guard %lu ms, ATS %s",
         instance->transceiver.fsc,
         instance->isodep.fwi,
         instance->isodep.fwi_announced ? "" : " (assumed)",
         (unsigned long)(instance->isodep.fwt_fc / EMRTD_ISO14443_4_FC_PER_MS),
+        instance->isodep.sfgi,
+        (unsigned long)instance->isodep.sfgt_ms,
         ats_hex);
+}
+
+void emrtd_iso14443_4_failure_detail(
+    const EmrtdIso14443_4* instance,
+    EmrtdError error,
+    char* out,
+    size_t out_size) {
+    if(out == NULL || out_size == 0) {
+        return;
+    }
+    if(instance == NULL) {
+        snprintf(out, out_size, "%s", emrtd_error_text(error));
+        return;
+    }
+    /*
+     * The mapped error says what it meant for the read; the radio code says
+     * what actually happened, and the two are not the same question. A
+     * timeout and an internal fault both arrive as "the document moved away".
+     */
+    snprintf(
+        out,
+        out_size,
+        "%s (radio %d after %u attempts)",
+        emrtd_error_text(error),
+        instance->last_error,
+        (unsigned)(EMRTD_ISODEP_RETRIES + 1));
 }
 
 void emrtd_iso14443_4_set_trace(

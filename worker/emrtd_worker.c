@@ -380,6 +380,19 @@ static EmrtdError emrtd_worker_transmit(
         EMRTD_WORKER_APDU_BUFFER_SIZE,
         &rx_len);
     if(error != EmrtdErrorNone) {
+        /*
+         * A command with no answer under it is the least informative thing a
+         * trace can end with, so it is followed by what the radio said. One
+         * error code covers a timeout, a checksum and an internal fault.
+         */
+        char detail[96];
+        emrtd_iso14443_4_failure_detail(worker->transport, error, detail, sizeof(detail));
+        FURI_LOG_W(TAG, "Exchange failed: %s", detail);
+        if(worker->export_ctx != NULL && worker->config.write_trace) {
+            char note[112];
+            snprintf(note, sizeof(note), "  (no answer: %s)", detail);
+            emrtd_export_trace_note(worker->export_ctx, note);
+        }
         return error;
     }
 

@@ -120,6 +120,18 @@ EmrtdIso14443_4Variant emrtd_iso14443_4_variant(const EmrtdIso14443_4* instance)
  */
 void emrtd_iso14443_4_describe(const EmrtdIso14443_4* instance, char* out, size_t out_size);
 
+/**
+ * Say what went wrong, with the radio's own code, for the trace.
+ *
+ * One EmrtdError covers several very different radio failures, and which one
+ * it was is the first question worth asking about a read that stopped.
+ */
+void emrtd_iso14443_4_failure_detail(
+    const EmrtdIso14443_4* instance,
+    EmrtdError error,
+    char* out,
+    size_t out_size);
+
 /** Install the diagnostic hook. Pass NULL to remove it. */
 void emrtd_iso14443_4_set_trace(
     EmrtdIso14443_4* instance,

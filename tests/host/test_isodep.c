@@ -49,7 +49,23 @@ typedef struct {
     uint32_t last_fwt;
     unsigned frames;
     unsigned commands; /**< Complete commands received, to catch a replay. */
+
+    /*
+     * Nobody sleeps in a test. The guard time the reader would have waited is
+     * recorded instead, and whether it waited before the first block is what
+     * the checks are really about.
+     */
+    uint32_t waited_ms;
+    unsigned waits;
+    unsigned frames_at_wait;
 } Chip;
+
+static void chip_delay(void* context, uint32_t ms) {
+    Chip* chip = context;
+    chip->waits++;
+    chip->waited_ms += ms;
+    chip->frames_at_wait = chip->frames;
+}
 
 /** Put one frame of the answer on the wire, chaining if the chip was told to. */
 static EmrtdError chip_answer(Chip* chip, uint8_t* rx, size_t rx_cap, size_t* rx_len) {
@@ -184,7 +200,7 @@ static void chip_init(Chip* chip, const uint8_t* ats, size_t ats_len) {
 static void parse_ats(EmrtdIsoDep* isodep, const char* hex) {
     uint8_t ats[64];
     const size_t len = emrtd_test_hex(hex, ats, sizeof(ats));
-    emrtd_isodep_init(isodep, NULL, NULL);
+    emrtd_isodep_init(isodep, NULL, NULL, NULL);
     emrtd_isodep_parse_ats(isodep, ats, len);
 }
 
@@ -197,6 +213,23 @@ static void test_ats(void) {
     TEST_EQ_INT(emrtd_isodep_fsc(&isodep), 256);
     TEST_EQ_INT(isodep.fwi, 7);
     TEST_CHECK(isodep.fwi_announced);
+
+    emrtd_test_begin("TB1 carries the start-up guard time as well as the waiting time");
+    /* TB1 = 0x96 is FWI 9 and SFGI 6, which is what a real passport announced. */
+    parse_ats(&isodep, "0578809602");
+    TEST_EQ_INT(isodep.fwi, 9);
+    TEST_EQ_INT(isodep.sfgi, 6);
+    /* 4096 << 6 cycles is 19.33 ms; rounded up and with the margin, 22. */
+    TEST_EQ_INT(emrtd_isodep_sfgt_ms(&isodep), 20 + EMRTD_ISODEP_SFGT_MARGIN_MS);
+
+    emrtd_test_begin("SFGI 0 asks for no guard time, so none is taken");
+    parse_ats(&isodep, "0578809002");
+    TEST_EQ_INT(isodep.sfgi, 0);
+    TEST_EQ_INT(emrtd_isodep_sfgt_ms(&isodep), 0);
+
+    emrtd_test_begin("a card that announces no TB1 asks for no guard time either");
+    parse_ats(&isodep, "031188");
+    TEST_EQ_INT(emrtd_isodep_sfgt_ms(&isodep), 0);
 
     emrtd_test_begin("FWI 9 is below the floor, so the floor is what is waited");
     parse_ats(&isodep, "0578809002");
@@ -230,7 +263,7 @@ static void test_ats(void) {
     TEST_EQ_INT(isodep.fwt_fc, EMRTD_ISODEP_FWT_MIN_FC);
 
     emrtd_test_begin("no ATS at all is survivable");
-    emrtd_isodep_init(&isodep, NULL, NULL);
+    emrtd_isodep_init(&isodep, NULL, NULL, NULL);
     emrtd_isodep_parse_ats(&isodep, NULL, 0);
     TEST_EQ_INT(emrtd_isodep_fsc(&isodep), 32);
     TEST_EQ_INT(isodep.fwt_fc, EMRTD_ISODEP_FWT_MIN_FC);
@@ -261,7 +294,7 @@ static void test_activation(void) {
 
     emrtd_test_begin("RATS asks for 256 byte frames and no card identifier");
     chip_init(&chip, ats, sizeof(ats));
-    emrtd_isodep_init(&isodep, chip_frame, &chip);
+    emrtd_isodep_init(&isodep, chip_frame, chip_delay, &chip);
     TEST_EQ_INT(emrtd_isodep_activate(&isodep), EmrtdErrorNone);
     TEST_CHECK(chip.activated);
     TEST_EQ_INT(chip.frames, 1);
@@ -277,10 +310,39 @@ static void test_activation(void) {
     TEST_CHECK(chip.last_fwt >= 65536u);
     TEST_EQ_INT(chip.last_fwt, EMRTD_ISODEP_RATS_FWT_FC);
 
+    emrtd_test_begin("the guard time is waited out after the ATS, before any block");
+    static const uint8_t slow_ats[] = {0x05, 0x78, 0x80, 0x96, 0x02};
+    static const uint8_t answer[] = {0x90, 0x00};
+    chip_init(&chip, slow_ats, sizeof(slow_ats));
+    emrtd_isodep_init(&isodep, chip_frame, chip_delay, &chip);
+    TEST_EQ_INT(emrtd_isodep_activate(&isodep), EmrtdErrorNone);
+    TEST_EQ_INT(chip.waits, 1);
+    TEST_EQ_INT(chip.waited_ms, 20 + EMRTD_ISODEP_SFGT_MARGIN_MS);
+    /* One frame had gone at that point: RATS, and nothing after it. */
+    TEST_EQ_INT(chip.frames_at_wait, 1);
+
+    emrtd_test_begin("and it is waited once, not before every command");
+    chip.response = answer;
+    chip.response_len = sizeof(answer);
+    uint8_t guard_rx[64];
+    size_t guard_rx_len = 0;
+    const uint8_t probe[] = {0x00, 0xA4, 0x04, 0x0C};
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(
+            &isodep, probe, sizeof(probe), guard_rx, sizeof(guard_rx), &guard_rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(chip.waits, 1);
+
+    emrtd_test_begin("a card asking for no guard time is not made to wait");
+    chip_init(&chip, ats, sizeof(ats));
+    emrtd_isodep_init(&isodep, chip_frame, chip_delay, &chip);
+    TEST_EQ_INT(emrtd_isodep_activate(&isodep), EmrtdErrorNone);
+    TEST_EQ_INT(chip.waits, 0);
+
     emrtd_test_begin("a card that never answers RATS is not tried again from here");
     chip_init(&chip, ats, sizeof(ats));
     chip.drop_next = 1;
-    emrtd_isodep_init(&isodep, chip_frame, &chip);
+    emrtd_isodep_init(&isodep, chip_frame, chip_delay, &chip);
     TEST_EQ_INT(emrtd_isodep_activate(&isodep), EmrtdErrorCardLost);
     TEST_EQ_INT(chip.frames, 1);
 
@@ -298,7 +360,7 @@ static void test_activation(void) {
 /** Activate against a chip and leave both ready for an exchange. */
 static void open_session(Chip* chip, EmrtdIsoDep* isodep, const uint8_t* ats, size_t ats_len) {
     chip_init(chip, ats, ats_len);
-    emrtd_isodep_init(isodep, chip_frame, chip);
+    emrtd_isodep_init(isodep, chip_frame, chip_delay, chip);
     TEST_EQ_INT(emrtd_isodep_activate(isodep), EmrtdErrorNone);
     chip->command_len = 0;
 }
@@ -507,7 +569,7 @@ static void test_malformed(void) {
     const uint8_t command[] = {0x00, 0xB0, 0x00, 0x00, 0x20};
 
     emrtd_test_begin("an endless chain is cut rather than followed for ever");
-    emrtd_isodep_init(&isodep, rude_frame, &calls);
+    emrtd_isodep_init(&isodep, rude_frame, NULL, &calls);
     TEST_EQ_INT(emrtd_isodep_activate(&isodep), EmrtdErrorNone);
     TEST_EQ_INT(
         emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),

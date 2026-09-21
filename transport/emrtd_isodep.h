@@ -86,6 +86,15 @@ extern "C" {
 #define EMRTD_ISODEP_ATS_MAX 24
 
 /**
+ * Margin added to the start-up guard time the card asks for.
+ *
+ * The standard asks for a minimum and says nothing about what happens to a
+ * reader that is a few microseconds under it. Two milliseconds costs nothing
+ * once per read and puts the question beyond doubt.
+ */
+#define EMRTD_ISODEP_SFGT_MARGIN_MS 2
+
+/**
  * How many times a chip may ask for more time before the reader gives up.
  *
  * Each round is worth up to the waiting time again, so this is a guard
@@ -130,8 +139,18 @@ typedef EmrtdError (*EmrtdIsoDepFrameFn)(
     size_t* rx_len,
     uint32_t fwt_fc);
 
+/**
+ * Wait, because the card asked to be left alone for a moment.
+ *
+ * Only the start-up guard time needs this, and only once per activation. It is
+ * a hook rather than a call to the firmware so that this file stays free of
+ * furi.h and the guard time can be checked on a host without anybody sleeping.
+ */
+typedef void (*EmrtdIsoDepDelayFn)(void* context, uint32_t ms);
+
 typedef struct {
     EmrtdIsoDepFrameFn send;
+    EmrtdIsoDepDelayFn delay;
     void* context;
 
     bool activated;
@@ -141,6 +160,9 @@ typedef struct {
     uint32_t fwt_fc; /**< What the reader actually waits, after the floor. */
     bool fwi_announced; /**< False when the ATS carried no TB1. */
 
+    uint8_t sfgi; /**< Start-up frame guard time index, from TB1. */
+    uint32_t sfgt_ms; /**< What that works out at, margin included. */
+
     uint8_t ats[EMRTD_ISODEP_ATS_MAX];
     size_t ats_len;
 
@@ -149,17 +171,34 @@ typedef struct {
     uint8_t rx_frame[EMRTD_ISODEP_FRAME_MAX];
 } EmrtdIsoDep;
 
-/** Bind the layer to a frame transport. Does not touch the card. */
-void emrtd_isodep_init(EmrtdIsoDep* instance, EmrtdIsoDepFrameFn send, void* context);
+/**
+ * Bind the layer to a frame transport. Does not touch the card.
+ *
+ * @param[in] delay may be NULL, in which case the start-up guard time a card
+ *                  asks for is computed and reported but not waited out
+ */
+void emrtd_isodep_init(
+    EmrtdIsoDep* instance,
+    EmrtdIsoDepFrameFn send,
+    EmrtdIsoDepDelayFn delay,
+    void* context);
 
 /** Forget the session. The frame transport is left bound. */
 void emrtd_isodep_reset(EmrtdIsoDep* instance);
 
 /**
- * Send RATS and parse the ATS.
+ * Send RATS, parse the ATS, and wait out the card's start-up guard time.
  *
  * On success the card is in the ISO 14443-4 protocol state and
  * emrtd_isodep_transceive() may be called.
+ *
+ * The wait is not optional politeness. ISO/IEC 14443-4 section 5.2.5 makes
+ * SFGT the minimum time between the end of the ATS and the reader's first
+ * frame, and a travel document asks for a long one because it is starting an
+ * operating system: SFGI 6, which is 19 milliseconds, has been seen in the
+ * field. Nothing in the Flipper firmware honours it - there is not one
+ * mention of SFG in its ISO 14443-4A implementation - so a reader that talks
+ * straight after the ATS is talking to a chip that is not listening yet.
  */
 EmrtdError emrtd_isodep_activate(EmrtdIsoDep* instance);
 
@@ -187,6 +226,9 @@ void emrtd_isodep_deselect(EmrtdIsoDep* instance);
 
 /** The card's frame size, capped at what this reader can send. */
 uint16_t emrtd_isodep_fsc(const EmrtdIsoDep* instance);
+
+/** The start-up guard time this card asked for, margin included, in ms. */
+uint32_t emrtd_isodep_sfgt_ms(const EmrtdIsoDep* instance);
 
 /** The raw ATS, for the log and the trace. NULL until activation succeeds. */
 const uint8_t* emrtd_isodep_ats(const EmrtdIsoDep* instance, size_t* len);
