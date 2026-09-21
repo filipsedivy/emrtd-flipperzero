@@ -71,11 +71,18 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
          "The document does not carry this data group. That is normal - only DG1, DG2 and "
          "EF.SOD are mandatory, and the rest are up to the issuing state."},
 
+    /*
+     * One status word, two situations, and only one of them is worth a retry.
+     * Where a file is what was refused the screen names it underneath this,
+     * and that is what tells the two apart: on DG3 or DG4 the refusal is
+     * final, anywhere else it is a lost session.
+     */
     [EmrtdErrorAccessDenied] =
         {"The chip refused access",
-         "The document will not serve this file without more rights than a reader can "
-         "have. Fingerprints and iris images (DG3, DG4) need a state issued certificate "
-         "and are out of reach for everyone else."},
+         "Either the secure session is gone, in which case laying the document back on and "
+         "reading again is enough, or this is a file no reader can have: fingerprints and "
+         "iris images (DG3, DG4) need a state issued certificate, and that refusal is "
+         "final."},
 
     [EmrtdErrorWrongKey] =
         {"The key does not open the chip",
