@@ -16,8 +16,6 @@
 #include <notification/notification_messages.h>
 #include <storage/storage.h>
 
-#include <gui/modules/byte_input.h>
-#include <gui/modules/loading.h>
 #include <gui/modules/number_input.h>
 #include <gui/modules/popup.h>
 #include <gui/modules/submenu.h>
@@ -54,6 +52,11 @@ typedef enum {
     EmrtdCustomEventDateInputDone,
     EmrtdCustomEventNumberInputDone,
 
+    /* Posted by the read scene when it refuses to start for want of memory.
+     * It cannot switch scenes from inside its own on_enter, so it posts this
+     * and lets the event loop carry it to the error screen. */
+    EmrtdCustomEventReadRefused,
+
     /* Posted from the NFC thread by the worker callback. */
     EmrtdCustomEventWorkerProgress,
     EmrtdCustomEventWorkerAuthenticated,
@@ -71,7 +74,6 @@ typedef enum {
     EmrtdViewSubmenu,
     EmrtdViewVariableItemList,
     EmrtdViewPopup,
-    EmrtdViewLoading,
     EmrtdViewTextInput,
     EmrtdViewNumberInput,
     EmrtdViewTextBox,
@@ -92,7 +94,6 @@ struct Emrtd {
     Submenu* submenu;
     VariableItemList* variable_item_list;
     Popup* popup;
-    Loading* loading;
     TextInput* text_input;
     NumberInput* number_input;
     TextBox* text_box;
@@ -120,7 +121,35 @@ struct Emrtd {
     /* Navigation state. */
     EmrtdDateField date_field;
     EmrtdFileId selected_file;
+
+    /* What the heap looked like when a read was refused. Kept so that the
+     * error screen can show the two numbers: a report that carries them can
+     * be acted on, and one that says only "not enough memory" cannot. */
+    size_t heap_free;
+    size_t heap_largest_block;
+    bool heap_host_connected;
 };
+
+/* --- The memory a read needs -------------------------------------------- */
+
+/*
+ * Both numbers are measured, not chosen, and neither carries a safety margin.
+ *
+ * EMRTD_HEAP_BLOCK_MIN is the largest single allocation on the read path: the
+ * NFC stack's own thread, whose stack nfc_alloc() takes from the heap in one
+ * piece the moment it is called. 8192 bytes requested, plus the eight byte
+ * block header that memmgr_heap_get_max_free_block() counts.
+ *
+ * EMRTD_HEAP_FREE_MIN is the peak the whole read reaches, which falls when
+ * EF.SOD is decoded. It is spread over about a hundred and fifty blocks, so it
+ * is a separate question from the one above and both have to be asked.
+ *
+ * A margin on top would refuse reads that would have worked: the free heap on
+ * an unconnected device is not much above the peak to begin with, which is the
+ * whole reason this check exists. See docs/platform.md, items 15 to 19.
+ */
+#define EMRTD_HEAP_BLOCK_MIN 8200u
+#define EMRTD_HEAP_FREE_MIN  27688u
 
 /* --- Helpers shared by the scenes --------------------------------------- */
 

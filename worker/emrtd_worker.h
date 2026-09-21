@@ -152,7 +152,12 @@ typedef struct {
  */
 struct Nfc;
 
-EmrtdWorker* emrtd_worker_alloc(void);
+/**
+ * @param[out] result  filled in place as the read proceeds, and owned by the
+ *                     caller: it has to outlive the worker, because every
+ *                     screen after the read is drawn from it.
+ */
+EmrtdWorker* emrtd_worker_alloc(EmrtdReadResult* result);
 void emrtd_worker_free(EmrtdWorker* worker);
 
 void emrtd_worker_set_config(EmrtdWorker* worker, const EmrtdWorkerConfig* config);

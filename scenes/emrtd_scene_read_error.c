@@ -61,6 +61,17 @@ void emrtd_scene_read_error_on_enter(void* context) {
         furi_string_cat_str(body, "\n\nAll three come from the\nbottom of the data page.");
     }
 
+    /* The two numbers behind the refusal. Without them a report says only
+     * that memory ran out, which is the one thing already known. */
+    if(error == EmrtdErrorOutOfMemory) {
+        furi_string_cat_printf(
+            body,
+            "\n\n\e#What it found\nFree: %zu B\nLargest piece: %zu B\nComputer: %s",
+            app->heap_free,
+            app->heap_largest_block,
+            app->heap_host_connected ? "connected" : "not connected");
+    }
+
     /* Which file it died on is the difference between a broken document and a
      * group this reader cannot open. */
     if(error != EmrtdErrorNone && app->result.error_file < EmrtdFileCount) {

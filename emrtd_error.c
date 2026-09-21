@@ -130,6 +130,14 @@ static const EmrtdErrorStrings emrtd_error_strings[] = {
          "The document uses a feature this reader understands but does not implement. The "
          "raw file is exported unchanged."},
 
+    [EmrtdErrorOutOfMemory] =
+        {"Not enough memory",
+         "A read needs about 28 kB free, and one unbroken piece of 8 kB for the radio "
+         "thread. The Flipper has neither right now.\n\nA computer talking to the device "
+         "costs about 20 kB of that: close lab.flipper.net or qFlipper, unplug the cable, "
+         "and restart the Flipper. Restarting is what gives the memory back, because this "
+         "application is loaded into it."},
+
     [EmrtdErrorStorage] =
         {"The SD card refused the write",
          "Check that a card is inserted, is not write protected and has room left. The "

@@ -116,10 +116,6 @@ static Emrtd* emrtd_alloc(void) {
     app->popup = popup_alloc();
     view_dispatcher_add_view(app->view_dispatcher, EmrtdViewPopup, popup_get_view(app->popup));
 
-    app->loading = loading_alloc();
-    view_dispatcher_add_view(
-        app->view_dispatcher, EmrtdViewLoading, loading_get_view(app->loading));
-
     app->text_input = text_input_alloc();
     view_dispatcher_add_view(
         app->view_dispatcher, EmrtdViewTextInput, text_input_get_view(app->text_input));
@@ -200,9 +196,6 @@ static void emrtd_free(Emrtd* app) {
 
     view_dispatcher_remove_view(app->view_dispatcher, EmrtdViewTextInput);
     text_input_free(app->text_input);
-
-    view_dispatcher_remove_view(app->view_dispatcher, EmrtdViewLoading);
-    loading_free(app->loading);
 
     view_dispatcher_remove_view(app->view_dispatcher, EmrtdViewPopup);
     popup_free(app->popup);

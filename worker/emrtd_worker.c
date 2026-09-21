@@ -48,6 +48,15 @@
 /** Largest offset the odd instruction form encodes here, in two bytes. */
 #define EMRTD_WORKER_LONG_OFFSET_MAX 0xFFFF
 
+/**
+ * What one heap block costs beyond the bytes asked for.
+ *
+ * FreeRTOS heap_4 puts an eight byte header in front of every block, and
+ * memmgr_heap_get_max_free_block() reports the block including it. Asking
+ * whether a request fits therefore means comparing against size plus this.
+ */
+#define EMRTD_WORKER_BLOCK_HEADER 8u
+
 /** Sanity bound on a file, so a malformed length cannot spin the reader. */
 #define EMRTD_WORKER_FILE_SIZE_MAX (64u * 1024u)
 
@@ -122,7 +131,16 @@ struct EmrtdWorker {
     EmrtdWorkerConfig config;
     EmrtdWorkerCallback callback;
     void* callback_context;
-    EmrtdReadResult result;
+
+    /*
+     * Borrowed, not owned. The record is two kilobytes and every screen after
+     * the read wants it, so the caller keeps it and the worker fills it in
+     * place. Holding a second copy here cost that much heap for the length of
+     * a read - the one stretch where there is none to spare - and it made the
+     * result outlive nothing: the scene had to copy it out before on_exit
+     * freed the worker, which is a step that can be forgotten.
+     */
+    EmrtdReadResult* result;
 
     Nfc* nfc;
     NfcPoller* poller;
@@ -591,18 +609,18 @@ static void emrtd_worker_digest_start(EmrtdWorker* worker) {
      * before any data group. Anything other than SHA-1 or SHA-256 is left
      * unhashed and reported as such rather than checked against the wrong sum.
      */
-    if(!worker->result.has_sod || !worker->result.sod.digest_supported) {
+    if(!worker->result->has_sod || !worker->result->sod.digest_supported) {
         return;
     }
 
-    if(worker->result.sod.digest_len == 20) {
+    if(worker->result->sod.digest_len == 20) {
         digest->sha256 = false;
         mbedtls_sha1_init(&digest->sha1);
         if(mbedtls_sha1_starts(&digest->sha1) != 0) {
             mbedtls_sha1_free(&digest->sha1);
             return;
         }
-    } else if(worker->result.sod.digest_len == 32) {
+    } else if(worker->result->sod.digest_len == 32) {
         digest->sha256 = true;
         mbedtls_sha256_init(&digest->sha2);
         if(mbedtls_sha256_starts(&digest->sha2, 0) != 0) {
@@ -679,16 +697,16 @@ static void emrtd_worker_check_hash(
         entry->hash_state = EmrtdHashStateUnknown;
         return;
     }
-    if(!worker->result.has_sod) {
+    if(!worker->result->has_sod) {
         entry->hash_state = EmrtdHashStateUnknown;
         return;
     }
-    if(!worker->result.sod.digest_supported || digest_len == 0) {
+    if(!worker->result->sod.digest_supported || digest_len == 0) {
         entry->hash_state = EmrtdHashStateUnsupportedDigest;
         return;
     }
 
-    const EmrtdSodHash* listed = emrtd_lds_sod_hash_for(&worker->result.sod, info->dg_number);
+    const EmrtdSodHash* listed = emrtd_lds_sod_hash_for(&worker->result->sod, info->dg_number);
     if(listed == NULL) {
         entry->hash_state = EmrtdHashStateNotListed;
         return;
@@ -698,10 +716,10 @@ static void emrtd_worker_check_hash(
         return;
     }
 
-    worker->result.hashes_checked++;
+    worker->result->hashes_checked++;
     if(memcmp(listed->hash, worker->digest_value, digest_len) == 0) {
         entry->hash_state = EmrtdHashStateMatch;
-        worker->result.hashes_matched++;
+        worker->result->hashes_matched++;
     } else {
         FURI_LOG_W(TAG, "%s does not match the hash in EF.SOD", info->name);
         entry->hash_state = EmrtdHashStateMismatch;
@@ -857,8 +875,8 @@ static EmrtdError emrtd_worker_stream_file(
             const bool found = emrtd_lds_dg2_find_image(worker->lookahead, look_len, &face) &&
                                face.offset <= look_len;
             if(found) {
-                worker->result.has_face = true;
-                worker->result.face = face;
+                worker->result->has_face = true;
+                worker->result->face = face;
                 emrtd_worker_export_arm_image(worker, face.offset, face.suffix);
             }
 
@@ -906,8 +924,8 @@ static EmrtdError emrtd_worker_stream_file(
     }
 
     entry->size = offset;
-    if(worker->result.has_face && dg2 && offset > worker->result.face.offset) {
-        worker->result.face_size = offset - worker->result.face.offset;
+    if(worker->result->has_face && dg2 && offset > worker->result->face.offset) {
+        worker->result->face_size = offset - worker->result->face.offset;
     }
 
     const size_t digest_len = emrtd_worker_digest_finish(worker);
@@ -920,7 +938,7 @@ static EmrtdError emrtd_worker_stream_file(
 /** Decode a file that was small enough to keep, and record what it held. */
 static EmrtdError
     emrtd_worker_parse_file(EmrtdWorker* worker, EmrtdFileId id, const uint8_t* data, size_t len) {
-    EmrtdReadResult* result = &worker->result;
+    EmrtdReadResult* result = worker->result;
 
     switch(id) {
     case EmrtdFileCom: {
@@ -985,7 +1003,7 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
         return EmrtdErrorInternal;
     }
 
-    EmrtdFileResult* entry = &worker->result.files[id];
+    EmrtdFileResult* entry = &worker->result->files[id];
     entry->state = EmrtdFileStateReading;
     entry->hash_state = EmrtdHashStateUnknown;
     entry->error = EmrtdErrorNone;
@@ -1026,13 +1044,23 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
     EmrtdWorkerParseBuffer parse = {0};
     EmrtdWorkerParseBuffer* parse_ptr = NULL;
     const size_t cap = emrtd_worker_parse_cap(id);
-    if(cap > 0) {
+    /*
+     * Asked before the allocation, not tested after it. pvPortMalloc does not
+     * return NULL on this firmware: a request it cannot meet ends in
+     * furi_crash("out of memory"), which reboots the device mid read. This is
+     * the largest single allocation the reader makes after the radio thread -
+     * six kilobytes for EF.SOD - and it is made deep into a read, when the
+     * heap is at its most crowded. Going without it costs the decoded view of
+     * the file; the bytes are still exported and still hashed.
+     */
+    if(cap > 0 && memmgr_heap_get_max_free_block() >= cap + EMRTD_WORKER_BLOCK_HEADER) {
         parse.data = malloc(cap);
-        if(parse.data != NULL) {
-            parse.capacity = cap;
-            parse_ptr = &parse;
-        } else {
-            FURI_LOG_W(TAG, "No room to decode %s", info->name);
+        parse.capacity = cap;
+        parse_ptr = &parse;
+    } else if(cap > 0) {
+        FURI_LOG_W(TAG, "No room to decode %s", info->name);
+        if(worker->export_ctx != NULL) {
+            emrtd_export_trace_note(worker->export_ctx, "no room to decode this file");
         }
     }
 
@@ -1150,8 +1178,8 @@ static size_t
         return 0;
     }
 
-    worker->result.card_access_read = true;
-    if(emrtd_security_infos_parse(buffer, offset, &worker->result.security_infos) !=
+    worker->result->card_access_read = true;
+    if(emrtd_security_infos_parse(buffer, offset, &worker->result->security_infos) !=
        EmrtdErrorNone) {
         FURI_LOG_W(TAG, "EF.CardAccess did not parse");
     }
@@ -1214,8 +1242,8 @@ static EmrtdError emrtd_worker_try_driver(
      * progress report that follows, so that the scene has something true to
      * put on the screen the moment the event reaches it.
      */
-    worker->result.access = outcome;
-    worker->result.authenticated = true;
+    worker->result->access = outcome;
+    worker->result->authenticated = true;
     worker->driver_name = driver->name;
     return EmrtdErrorNone;
 }
@@ -1329,7 +1357,7 @@ static void emrtd_worker_read_data_groups(EmrtdWorker* worker, EmrtdFileMask pre
 
         const EmrtdFileId id = (EmrtdFileId)i;
         const EmrtdFileInfo* info = emrtd_file_info(id);
-        EmrtdFileResult* entry = &worker->result.files[i];
+        EmrtdFileResult* entry = &worker->result->files[i];
         if(info == NULL) {
             continue;
         }
@@ -1360,8 +1388,8 @@ static void emrtd_worker_read_data_groups(EmrtdWorker* worker, EmrtdFileMask pre
         if(error == EmrtdErrorCardLost || error == EmrtdErrorTransport ||
            error == EmrtdErrorSecureMessaging) {
             /* The link or the session is gone; nothing further can be read. */
-            worker->result.error = error;
-            worker->result.error_file = id;
+            worker->result->error = error;
+            worker->result->error_file = id;
             return;
         }
     }
@@ -1376,7 +1404,7 @@ static void emrtd_worker_read_data_groups(EmrtdWorker* worker, EmrtdFileMask pre
  * computed while the bytes stream past rather than from a second copy.
  */
 static void emrtd_worker_read(EmrtdWorker* worker) {
-    EmrtdReadResult* result = &worker->result;
+    EmrtdReadResult* result = worker->result;
 
     if(!emrtd_worker_report(
            worker, EmrtdWorkerStageSelectingApplication, EmrtdFileCom, 0, 0, 2, NULL)) {
@@ -1404,14 +1432,22 @@ static void emrtd_worker_read(EmrtdWorker* worker) {
         return;
     }
 
-    uint8_t* card_access = malloc(EMRTD_WORKER_CARD_ACCESS_MAX);
+    /* Asked before the allocation, for the reason given at the EF.SOD buffer:
+     * a malloc that cannot be met takes the device down rather than returning
+     * NULL, so the fallback below is only reachable if nothing is allocated. */
+    uint8_t* card_access = NULL;
     size_t card_access_len = 0;
-    if(card_access != NULL) {
+    if(memmgr_heap_get_max_free_block() >=
+       EMRTD_WORKER_CARD_ACCESS_MAX + EMRTD_WORKER_BLOCK_HEADER) {
+        card_access = malloc(EMRTD_WORKER_CARD_ACCESS_MAX);
         memset(card_access, 0, EMRTD_WORKER_CARD_ACCESS_MAX);
         card_access_len =
             emrtd_worker_read_card_access(worker, card_access, EMRTD_WORKER_CARD_ACCESS_MAX);
     } else {
         FURI_LOG_W(TAG, "No room for EF.CardAccess; access control will have to guess");
+        if(worker->export_ctx != NULL) {
+            emrtd_export_trace_note(worker->export_ctx, "no room for EF.CardAccess");
+        }
     }
 
     /*
@@ -1538,16 +1574,16 @@ static void emrtd_worker_export_result(EmrtdWorker* worker) {
 
     emrtd_worker_report(worker, EmrtdWorkerStageExporting, EmrtdFileCom, 0, 0, 95, NULL);
 
-    if(worker->result.has_mrz) {
-        emrtd_export_write_mrz(worker->export_ctx, &worker->result.mrz);
+    if(worker->result->has_mrz) {
+        emrtd_export_write_mrz(worker->export_ctx, &worker->result->mrz);
     }
-    emrtd_export_write_report(worker->export_ctx, &worker->result, &worker->config);
+    emrtd_export_write_report(worker->export_ctx, worker->result, &worker->config);
 
     if(!emrtd_export_failed(worker->export_ctx)) {
-        worker->result.exported = true;
+        worker->result->exported = true;
         snprintf(
-            worker->result.export_path,
-            sizeof(worker->result.export_path),
+            worker->result->export_path,
+            sizeof(worker->result->export_path),
             "%s",
             emrtd_export_path(worker->export_ctx));
     }
@@ -1592,7 +1628,7 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
     EmrtdWorker* worker = context;
 
     if(worker->stop_requested) {
-        worker->result.error = EmrtdErrorCancelled;
+        worker->result->error = EmrtdErrorCancelled;
         return emrtd_worker_finish(worker);
     }
 
@@ -1626,7 +1662,7 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
             worker->activation_error = EmrtdErrorCardLost;
         }
     } else {
-        worker->result.error = EmrtdErrorProtocol;
+        worker->result->error = EmrtdErrorProtocol;
         return emrtd_worker_finish(worker);
     }
 
@@ -1640,9 +1676,9 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
             emrtd_error_text(worker->activation_error));
 
         if(worker->activation_failures >= EMRTD_WORKER_ACTIVATION_RETRIES) {
-            worker->result.error = worker->activation_error != EmrtdErrorNone ?
-                                       worker->activation_error :
-                                       EmrtdErrorActivation;
+            worker->result->error = worker->activation_error != EmrtdErrorNone ?
+                                        worker->activation_error :
+                                        EmrtdErrorActivation;
             return emrtd_worker_finish(worker);
         }
         /*
@@ -1684,8 +1720,8 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
     emrtd_worker_read(worker);
     emrtd_worker_export_result(worker);
 
-    if(worker->result.error != EmrtdErrorNone) {
-        FURI_LOG_W(TAG, "Read ended: %s", emrtd_error_text(worker->result.error));
+    if(worker->result->error != EmrtdErrorNone) {
+        FURI_LOG_W(TAG, "Read ended: %s", emrtd_error_text(worker->result->error));
     }
 
     /*
@@ -1743,7 +1779,7 @@ static int32_t emrtd_worker_thread(void* context) {
     }
 
     if(detected == NfcProtocolInvalid) {
-        worker->result.error = EmrtdErrorCancelled;
+        worker->result->error = EmrtdErrorCancelled;
         emrtd_worker_report(worker, EmrtdWorkerStageError, EmrtdFileCom, 0, 0, 0, NULL);
         return 0;
     }
@@ -1786,8 +1822,8 @@ static int32_t emrtd_worker_thread(void* context) {
 
     emrtd_worker_report(
         worker,
-        worker->result.error == EmrtdErrorNone ? EmrtdWorkerStageDone : EmrtdWorkerStageError,
-        worker->result.error_file,
+        worker->result->error == EmrtdErrorNone ? EmrtdWorkerStageDone : EmrtdWorkerStageError,
+        worker->result->error_file,
         0,
         0,
         100,
@@ -1798,9 +1834,12 @@ static int32_t emrtd_worker_thread(void* context) {
 
 /* --- The public interface ------------------------------------------------ */
 
-EmrtdWorker* emrtd_worker_alloc(void) {
+EmrtdWorker* emrtd_worker_alloc(EmrtdReadResult* result) {
+    furi_check(result);
+
     EmrtdWorker* worker = malloc(sizeof(EmrtdWorker));
     memset(worker, 0, sizeof(EmrtdWorker));
+    worker->result = result;
 
     worker->events = furi_event_flag_alloc();
     worker->transport = emrtd_iso14443_4_alloc();
@@ -1862,7 +1901,7 @@ void emrtd_worker_start(EmrtdWorker* worker, struct Nfc* nfc) {
     furi_check(nfc);
     furi_check(!worker->running);
 
-    memset(&worker->result, 0, sizeof(EmrtdReadResult));
+    memset(worker->result, 0, sizeof(EmrtdReadResult));
     worker->files_total = 0;
     worker->files_done = 0;
     worker->activation_failures = 0;
@@ -1902,5 +1941,5 @@ void emrtd_worker_stop(EmrtdWorker* worker) {
 const EmrtdReadResult* emrtd_worker_result(const EmrtdWorker* worker) {
     furi_check(worker);
 
-    return &worker->result;
+    return worker->result;
 }

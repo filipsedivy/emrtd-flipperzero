@@ -138,9 +138,19 @@ static uint32_t emrtd_isodep_sfgt_from_sfgi(uint8_t sfgi) {
     if(sfgi > EMRTD_ISODEP_SFGI_MAX) {
         sfgi = EMRTD_ISODEP_SFGI_MAX;
     }
-    const uint64_t ns = (uint64_t)EMRTD_ISODEP_SFGT_UNIT_NS << sfgi;
+    /*
+     * Halved before the shift, and the divisor halved with it, because the
+     * full figure overflows: at SFGI 14 it is 4,949,032,960 nanoseconds. The
+     * result is identical - ceil(2n / 1000000) is ceil(n / 500000) - and it
+     * keeps the whole calculation in 32 bits. That matters out of proportion
+     * to its size: this was the only 64 bit division in the application, and
+     * it alone linked 760 bytes of libgcc's __aeabi_uldivmod into a binary
+     * that is loaded into RAM. SFGI 0 has already returned above, so the
+     * shift below is never negative.
+     */
+    const uint32_t half_ns = EMRTD_ISODEP_SFGT_UNIT_NS << (sfgi - 1u);
     /* Round up to the millisecond, then add the margin. */
-    const uint32_t ms = (uint32_t)((ns + 999999u) / 1000000u);
+    const uint32_t ms = (half_ns + 499999u) / 500000u;
     return ms + EMRTD_ISODEP_SFGT_MARGIN_MS;
 }
 

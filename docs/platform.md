@@ -67,3 +67,51 @@
 14. The type B poller is not affected: `iso14443_4b_poller_send_block()` gets
     its waiting time from `iso14443_3b_get_fwt_fc_max()`, which reads the ATQB
     protocol info. That path still uses the firmware's own implementation.
+
+## Memory (verified empirically, 2026-09-21)
+
+15. **The heap is 190,144 bytes**, not the hundred kilobytes this project used
+    to say. `__heap_start__` is `0x20001540` and `__heap_end__` is
+    `0x2002fc00`; the pair is in the literal pool of
+    `__furi_crash_implementation` at `0x08012980`, which prints the difference
+    as the total, and a crash dump from a real device confirms it
+    (`heap total: 190144`). The 1,024 bytes up to `_stack_end` at `0x20030000`
+    are the main stack, not heap.
+16. **The application's own image is half of it.** A FAP is loaded into RAM
+    section by section, each as one contiguous block: `.text` 67,888,
+    `.rodata` 23,712, `.bss` 3,200, and the rest 48, for 94,848 bytes. The
+    `.text` block alone is a 35 per cent contiguous demand on the whole heap.
+    Rank any size reduction by what it takes off `.text` first.
+17. **`pvPortMalloc` never returns NULL.** Both of its failure exits - not
+    enough free in total at `0x801486c`, and no single block large enough at
+    `0x801488a` - reach `0x801481a`, which loads `"out of memory"` and falls
+    into `__furi_crash_implementation`. Every `if(p != NULL)` after an
+    allocation is therefore unreachable on this firmware. A shortage can only
+    be handled by asking `memmgr_heap_get_max_free_block()` **before**
+    allocating, which is what the read scene and the two large mid-read
+    buffers now do.
+18. **There are two different "out of memory" screens**, and which one appears
+    says where the failure was. `"out of memory"` in lower case is the crash
+    above: it prints the crashing thread's name, r0 to r11, LR, the stack
+    watermark and the heap figures **to the log UART on pins 13 and 14**, then
+    stores the message pointer in an RTC backup register and reboots.
+    `"Error: Out of Memory - Not enough RAM to run the app"` with a `Reboot`
+    button is the loader dialog: `elf_load_section_data` checks
+    `memmgr_heap_get_max_free_block() >= sh_size + 1024` before each section
+    and gives up cleanly. The first means the application was running; the
+    second means it never started.
+19. **`furi_hal_usb_is_locked()` means "an RPC session is open"**, precisely.
+    Scanning the whole firmware for callers of `furi_hal_usb_lock`
+    (`0x08010490`) finds exactly one: `rpc_cli_command_start_session` at
+    `0x0808692a`. So it distinguishes lab.flipper.net, qFlipper or the mobile
+    app from a cable that is only charging - which
+    `furi_hal_power_is_charging()` cannot. It allocates an event flag and
+    blocks on the USB thread, so it belongs on a failure path, not a hot one.
+20. **A connected computer costs about 20.2 kB of heap**, in three layers that
+    arrive separately: opening the serial port at all starts a CLI shell with
+    a 4 kB thread stack (about 5.6 kB); `start_rpc_session` adds a second 4 kB
+    command thread, a 3 kB session worker and 51 handler records (about
+    11.8 kB); and the screen mirror adds a framebuffer, a protobuf message and
+    a 1 kB thread (about 2.9 kB). lab.flipper.net starts the screen mirror by
+    itself - its landing page is the Device page, whose `onMounted` calls
+    `startScreenStream()` as soon as RPC is up.

@@ -33,8 +33,9 @@ which variant it was.
 | Active Authentication, Chip Authentication, Terminal Authentication | **no** - DG14 and DG15 are read and reported, the protocols are not run |
 | Writing to a chip | **no**, and there is nothing in here that could |
 
-DG2 is tens of kilobytes against a heap of about a hundred, so it is never held
-in memory: it goes to the SD card as it arrives, hashed on the way past.
+DG2 is tens of kilobytes against a heap of 186 KB that already holds this
+application, so it is never held in memory: it goes to the SD card as it
+arrives, hashed on the way past.
 
 ## What "verified" means here
 

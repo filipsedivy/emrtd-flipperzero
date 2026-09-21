@@ -57,17 +57,67 @@ static void emrtd_scene_read_view_callback(void* context) {
     view_dispatcher_send_custom_event(app->view_dispatcher, EmrtdCustomEventViewExit);
 }
 
+/**
+ * Refuse the read rather than let the allocator take the device down.
+ *
+ * pvPortMalloc does not return NULL on this firmware. Both of its failure
+ * exits - no block large enough, and not enough left in total - end in
+ * furi_crash("out of memory"), which reboots. So every `if(p != NULL)` after
+ * an allocation is unreachable, and the only place a shortage can be handled
+ * is here, before the first byte is asked for.
+ *
+ * @return true when the read may start
+ */
+static bool emrtd_scene_read_have_memory(Emrtd* app) {
+    app->heap_free = memmgr_get_free_heap();
+    app->heap_largest_block = memmgr_heap_get_max_free_block();
+    app->heap_host_connected = false;
+
+    if(app->heap_free >= EMRTD_HEAP_FREE_MIN && app->heap_largest_block >= EMRTD_HEAP_BLOCK_MIN) {
+        return true;
+    }
+
+    /*
+     * Only now, and never on the way to a successful read: this allocates an
+     * event flag and blocks on the USB thread. The USB interface is locked by
+     * exactly one thing in the whole firmware - rpc_cli_command_start_session
+     * - so a lock means a session is open, which is a sharper thing to say
+     * than "a cable is plugged in".
+     */
+    app->heap_host_connected = furi_hal_usb_is_locked();
+
+    FURI_LOG_E(
+        TAG,
+        "read refused: free %zu (need %u), largest block %zu (need %u), host %s",
+        app->heap_free,
+        EMRTD_HEAP_FREE_MIN,
+        app->heap_largest_block,
+        EMRTD_HEAP_BLOCK_MIN,
+        app->heap_host_connected ? "connected" : "absent");
+
+    return false;
+}
+
 void emrtd_scene_read_on_enter(void* context) {
     furi_assert(context);
     Emrtd* app = context;
-
-    dolphin_deed(DolphinDeedNfcRead);
 
     /* Nothing of a previous read may show through: the view keeps its model
      * between visits, and a stale stage line on a retry would be a lie. */
     memset(&app->result, 0, sizeof(app->result));
     memset(&app->progress, 0, sizeof(app->progress));
     app->progress.stage = EmrtdWorkerStageWaitingForCard;
+
+    if(!emrtd_scene_read_have_memory(app)) {
+        app->result.error = EmrtdErrorOutOfMemory;
+        app->result.error_file = EmrtdFileCount;
+        /* A scene cannot leave itself from inside on_enter, so the error
+         * screen is reached through the event loop instead. */
+        view_dispatcher_send_custom_event(app->view_dispatcher, EmrtdCustomEventReadRefused);
+        return;
+    }
+
+    dolphin_deed(DolphinDeedNfcRead);
 
     emrtd_read_view_set_callback(app->read_view, emrtd_scene_read_view_callback, app);
     emrtd_read_view_set_access(app->read_view, NULL);
@@ -78,7 +128,7 @@ void emrtd_scene_read_on_enter(void* context) {
      * on_exit, so that browsing saved reads does not hold the NFC hardware.
      */
     app->nfc = nfc_alloc();
-    app->worker = emrtd_worker_alloc();
+    app->worker = emrtd_worker_alloc(&app->result);
     emrtd_worker_set_config(app->worker, &app->config);
     emrtd_worker_set_callback(app->worker, emrtd_scene_read_worker_callback, app);
     emrtd_worker_start(app->worker, app->nfc);
@@ -95,6 +145,13 @@ bool emrtd_scene_read_on_event(void* context, SceneManagerEvent event) {
 
     if(event.type == SceneManagerEventTypeCustom) {
         switch(event.event) {
+        case EmrtdCustomEventReadRefused:
+            /* on_enter allocated nothing, so there is nothing to unwind; the
+             * error is already in app->result. */
+            scene_manager_next_scene(app->scene_manager, EmrtdSceneReadError);
+            consumed = true;
+            break;
+
         case EmrtdCustomEventWorkerProgress:
             emrtd_read_view_set_progress(app->read_view, &app->progress);
             consumed = true;
@@ -104,41 +161,28 @@ bool emrtd_scene_read_on_event(void* context, SceneManagerEvent event) {
             emrtd_read_view_set_progress(app->read_view, &app->progress);
 
             /*
-             * The access outcome is complete before this event was posted and
-             * the event queue orders the two, so reading it here is safe even
-             * though the rest of the result is not final until the worker
-             * stops. Only the outcome is taken.
+             * The worker writes straight into app->result, and the access
+             * outcome was complete before this event was posted, so it can be
+             * read here even though the rest of the record is not final until
+             * the worker stops.
              */
-            const EmrtdReadResult* result = emrtd_worker_result(app->worker);
-            if(result != NULL) {
-                app->result.access = result->access;
-                app->result.authenticated = true;
-                if(app->result.access.summary[0] != '\0') {
-                    emrtd_read_view_set_access(app->read_view, app->result.access.summary);
-                }
+            if(app->result.access.summary[0] != '\0') {
+                emrtd_read_view_set_access(app->read_view, app->result.access.summary);
             }
             consumed = true;
             break;
         }
 
-        case EmrtdCustomEventWorkerSuccess: {
-            const EmrtdReadResult* result = emrtd_worker_result(app->worker);
-            if(result != NULL) {
-                /* Copied before the scene changes: next_scene runs on_exit,
-                 * and on_exit frees the worker this points into. */
-                app->result = *result;
-            }
+        case EmrtdCustomEventWorkerSuccess:
+            /* app->result is the record the worker has been filling, so it
+             * needs no rescuing before on_exit frees the worker. */
             dolphin_deed(DolphinDeedNfcReadSuccess);
             scene_manager_next_scene(app->scene_manager, EmrtdSceneReadSuccess);
             consumed = true;
             break;
-        }
 
-        case EmrtdCustomEventWorkerError: {
-            const EmrtdReadResult* result = emrtd_worker_result(app->worker);
-            if(result != NULL) {
-                app->result = *result;
-            } else {
+        case EmrtdCustomEventWorkerError:
+            if(app->result.error == EmrtdErrorNone) {
                 /* The worker reported a failure it cannot describe. Saying so
                  * is still better than an error screen with no error on it. */
                 app->result.error = EmrtdErrorInternal;
@@ -152,7 +196,6 @@ bool emrtd_scene_read_on_event(void* context, SceneManagerEvent event) {
             }
             consumed = true;
             break;
-        }
 
         case EmrtdCustomEventViewExit:
             scene_manager_previous_scene(app->scene_manager);

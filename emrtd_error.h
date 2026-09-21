@@ -51,6 +51,7 @@ typedef enum {
     EmrtdErrorUnsupported, /**< Understood, but out of this reader's scope. */
 
     /* Local */
+    EmrtdErrorOutOfMemory, /**< The heap cannot hold a read; see docs/platform.md. */
     EmrtdErrorStorage, /**< The SD card refused the export. */
     EmrtdErrorBufferTooSmall, /**< A caller supplied buffer could not hold the result. */
     EmrtdErrorInvalidInput, /**< The credentials are not well formed. */

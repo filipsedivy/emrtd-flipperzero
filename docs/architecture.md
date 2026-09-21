@@ -148,8 +148,9 @@ is why nothing on the read path puts a large buffer on the stack.
 
 ## Memory
 
-The heap is about a hundred kilobytes and a single data group can be forty of
-them, so the read path is written not to hold a file:
+The heap is 186 KB, the application's own image occupies half of it before a
+read begins, and a single data group can be forty kilobytes. So the read path
+is written not to hold a file:
 
 - `emrtd_tlv` parses in place. A node is a pointer into the buffer it came
   from, iteration is a cursor, and nothing is copied or allocated.
@@ -160,7 +161,13 @@ them, so the read path is written not to hold a file:
   `emrtd_lds_dg2_find_image()`, and from then on the same chunks are teed
   into a second file. The image is never a second copy of the group.
 - A `.fap` is loaded into RAM, so the binary itself counts against that
-  hundred kilobytes; see item 9 of [platform.md](platform.md).
+  186 KB - 94,848 bytes of it, in blocks that have to be contiguous. See
+  items 15 to 20 of [platform.md](platform.md).
+- A read is refused before it starts if the heap cannot hold it, rather than
+  allowed to reach an allocation that would take the device down: on this
+  firmware a request the allocator cannot meet crashes rather than returning
+  NULL. The commonest cause is a computer attached over USB, which costs about
+  20 KB.
 
 ## Errors
 

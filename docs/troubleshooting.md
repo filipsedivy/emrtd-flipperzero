@@ -51,6 +51,7 @@ that matches it.
 | **The secure channel broke** | A response failed its checksum, or the sequence counter slipped. | The session cannot be resynchronised; read again. If it fails on the same file every time, send a trace. |
 | **The file is not what it claims** | A file is not the structure the standard describes. | The raw bytes are exported anyway. Attach the `.bin` and the report. |
 | **Out of this reader's scope** | Understood, but not implemented. | DG3 and DG4 are the usual cause: Extended Access Control needs a state issued terminal certificate. |
+| **Not enough memory** | The Flipper does not have the memory a read needs, so the read was refused rather than started. | Almost always a computer attached over USB. See the section below. |
 | **The SD card refused the write** | The export could not be written. | Check the card is in, unlocked and has room. The read itself still works with **Export to SD** off. |
 | **Value larger than expected** | A field is bigger than the space reserved for it. | The raw file is exported in full, so nothing is lost. Worth a report with that file. |
 | **The credentials are incomplete** | The credentials are not well formed. | Up to twenty characters of A-Z and 0-9 for the number, and two dates that exist. |
@@ -121,6 +122,66 @@ The stage and the file on the read screen say where it stopped, and the
 result screens still show everything that was read before. A failure on DG2
 specifically is usually the document moving: it is the largest file and takes
 the longest.
+
+## Not enough memory, or the application dying when a read starts
+
+If the reader worked yesterday and today it refuses to start a read - or, on a
+version before this check existed, the Flipper reboots into an **Out of memory**
+screen the moment the scan begins - look at the USB cable first.
+
+**Close lab.flipper.net or qFlipper, unplug the cable, and restart the Flipper.**
+Restarting is the part that matters: the application is loaded into RAM, so the
+memory it wants has to be free before it is launched, and a session that has been
+opened and closed does not always leave the heap as it found it.
+
+### Why a cable costs so much
+
+The Flipper's whole heap is 186 KB, and this application's own image occupies
+94,848 bytes of it before a single passport is touched - a `.fap` is executed
+from RAM, not from the SD card, so the binary is resident for as long as it
+runs. A read then needs about 28 KB more, and one unbroken piece of 8 KB for the
+radio thread.
+
+A computer attached over USB takes about 20 KB, in three layers that arrive
+separately:
+
+| What | Cost | When |
+| --- | --- | --- |
+| A serial shell | ~5.6 KB | any program opening the port, including a plain terminal |
+| An RPC session | ~11.8 KB | qFlipper, lab.flipper.net, the mobile application |
+| The screen mirror | ~2.9 KB | lab.flipper.net starts it by itself on its front page |
+
+Twenty kilobytes is almost exactly the margin a read has, which is why the same
+document reads perfectly with the cable out and fails with it in.
+
+### Narrowing it down without any equipment
+
+lab.flipper.net's own pages cost different amounts, so moving between them
+brackets the problem. Try the read from each, in this order:
+
+1. the front page, which is the Device page - shell, session and screen mirror;
+2. `/apps` or `/archive` - shell and session, no mirror;
+3. `/cli` - the shell only, because opening a text terminal closes the session;
+4. cable out, after a restart.
+
+If it fails on the front page and works on `/apps`, the margin is under three
+kilobytes and the screen mirror is what tips it over. If it fails on both and
+works with the cable out, it is the shell and the session.
+
+From `/cli`, the `free` command prints the answer directly. **Maximum heap
+block** is the number that decides whether a read can start; it has to be above
+8,200. It is a separate question from the free total, because the radio thread's
+stack has to come out of one unbroken run, and a heap can have plenty free in
+pieces too small to be of use.
+
+### Reading the crash itself
+
+On a version without the pre-flight check, the crash dump goes out the **log
+UART on pins 13 (TX) and 14 (RX) at 230400 8N1** - which a computer holding the
+USB port does not touch. That dump names the thread that failed, the size it
+asked for in `r7`, and the free heap at that instant. Free heap far above the
+requested size means the heap was fragmented rather than full; barely above it
+means it was full.
 
 ## Sending a report
 
