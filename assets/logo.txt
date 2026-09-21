@@ -12,7 +12,7 @@ Banner:
     ████  ████  ████
     ████  ████  ████  e M R T D
     ████████████████
-    ████████████████  electronic passport reader
+    ████████████████  electronic document reader
     ████  ████  ████  for Flipper Zero
     ████  ████  ████
     ████████████████

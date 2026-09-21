@@ -51,7 +51,7 @@ PAPER = 1
 # know how wide the type is before it can decide how wide the picture is -
 # guessing that number is what once cropped the D off the end.
 WORDMARK = "eMRTD"
-TAGLINE = ("electronic passport reader", "for Flipper Zero")
+TAGLINE = ("electronic document reader", "for Flipper Zero")
 
 ADVANCE_BOLD = {
     "D": 0.7222, "M": 0.8330, "R": 0.7222, "T": 0.6108, "e": 0.5562,
@@ -59,8 +59,8 @@ ADVANCE_BOLD = {
 ADVANCE_REGULAR = {
     " ": 0.2778, "F": 0.6108, "Z": 0.6108, "a": 0.5562, "c": 0.5000,
     "d": 0.5562, "e": 0.5562, "f": 0.2778, "i": 0.2222, "l": 0.2222,
-    "n": 0.5562, "o": 0.5562, "p": 0.5562, "r": 0.3330, "s": 0.5000,
-    "t": 0.2778,
+    "m": 0.8330, "n": 0.5562, "o": 0.5562, "p": 0.5562, "r": 0.3330,
+    "s": 0.5000, "t": 0.2778, "u": 0.5562,
 }
 CAP_HEIGHT = 0.716  # em, the height of a capital, Arial and Helvetica alike
 DESCENDER = 0.212  # em, how far below the baseline a p reaches
@@ -287,7 +287,7 @@ def write_ascii(path):
     block = render("██", "  ")
     plain = render("##", "  ")
 
-    wordmark = ["", "", "  e M R T D", "", "  electronic passport reader", "  for Flipper Zero", "", ""]
+    wordmark = ["", "", "  e M R T D", "", f"  {TAGLINE[0]}", f"  {TAGLINE[1]}", "", ""]
 
     text = [
         "eMRTD",
