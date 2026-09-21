@@ -14,12 +14,12 @@
 #include <mbedtls/sha1.h>
 #include <mbedtls/sha256.h>
 
-#include "../../crypto/emrtd_bac.h"
-#include "../../crypto/emrtd_ec.h"
-#include "../../crypto/emrtd_kdf.h"
-#include "../../crypto/emrtd_mac.h"
-#include "../../crypto/emrtd_rng.h"
-#include "../../protocol/emrtd_mrz.h"
+#include "../crypto/emrtd_bac.h"
+#include "../crypto/emrtd_ec.h"
+#include "../crypto/emrtd_kdf.h"
+#include "../crypto/emrtd_mac.h"
+#include "../crypto/emrtd_rng.h"
+#include "../protocol/emrtd_mrz.h"
 
 #define SIM_FILE_MAX      4
 #define SIM_SCALAR_SIZE   32

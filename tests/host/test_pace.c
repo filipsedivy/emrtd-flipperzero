@@ -20,7 +20,7 @@
 
 #include "../../crypto/emrtd_mac.h"
 #include "../../crypto/emrtd_pace.h"
-#include "emrtd_sim.h"
+#include "../../sim/emrtd_sim.h"
 
 /** id-PACE-ECDH-GM-AES-CBC-CMAC-128, the protocol nearly every passport uses. */
 #define PACE_OID_AES128 "04007F00070202040202"

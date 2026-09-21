@@ -4,10 +4,17 @@
  *
  * A passport chip, simulated at the APDU level.
  *
- * This is test scaffolding and lives only under tests/. Nothing in the
- * application may reference it: the reader has exactly one way to reach a
- * card, which is EmrtdTransceiver, and the point of this object is to sit
- * behind that port so a whole read can run on a workstation.
+ * The reader has exactly one way to reach a card, which is EmrtdTransceiver,
+ * and the point of this object is to sit behind that port so that a whole read
+ * can run with no radio underneath it.
+ *
+ * Two callers are allowed and no others. The host test suite drives it so that
+ * a read can be checked on a workstation with sanitizers attached, and the
+ * demo build - EMRTD_DEMO=1, demo/emrtd_demo.h - drives it so that the screens
+ * can be photographed without a document in hand. The released package does
+ * not compile this file at all; see application.fam. Nothing in the reader may
+ * reference it either way: a layer that knows whether the chip is real would
+ * stop being the thing the tests exercise.
  *
  * The chip side of every protocol is written out here rather than borrowed
  * from the reader. That is deliberate: if both ends shared an implementation,
@@ -26,9 +33,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../access/emrtd_access.h"
-#include "../../crypto/emrtd_crypto.h"
-#include "../../transport/emrtd_transceiver.h"
+#include "../access/emrtd_access.h"
+#include "../crypto/emrtd_crypto.h"
+#include "../transport/emrtd_transceiver.h"
 
 /** Which access protocols the simulated chip will answer. */
 typedef enum {

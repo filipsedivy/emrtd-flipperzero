@@ -16,7 +16,7 @@
 #include "emrtd_test.h"
 
 #include "../../access/emrtd_access.h"
-#include "emrtd_sim.h"
+#include "../../sim/emrtd_sim.h"
 
 static EmrtdCredentials specimen(void) {
     EmrtdCredentials credentials;

@@ -19,7 +19,9 @@
 #include "../../protocol/emrtd_apdu.h"
 #include "../../protocol/emrtd_lds.h"
 #include "../../transport/emrtd_transceiver.h"
-#include "emrtd_sim.h"
+#include "../../sim/emrtd_sim.h"
+
+#include <mbedtls/sha256.h>
 
 #include <mbedtls/sha256.h>
 
