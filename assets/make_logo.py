@@ -44,6 +44,40 @@ NOTCHES = [
 INK = 0
 PAPER = 1
 
+# The wordmark, and the advance width of every character it uses, in em.
+# The figures are Arial's, which is metric compatible with Helvetica and
+# with Liberation Sans, so this one table describes the wordmark on macOS,
+# on Windows and on Linux alike. They are here because the drawing has to
+# know how wide the type is before it can decide how wide the picture is -
+# guessing that number is what once cropped the D off the end.
+WORDMARK = "eMRTD"
+TAGLINE = ("electronic passport reader", "for Flipper Zero")
+
+ADVANCE_BOLD = {
+    "D": 0.7222, "M": 0.8330, "R": 0.7222, "T": 0.6108, "e": 0.5562,
+}
+ADVANCE_REGULAR = {
+    " ": 0.2778, "F": 0.6108, "Z": 0.6108, "a": 0.5562, "c": 0.5000,
+    "d": 0.5562, "e": 0.5562, "f": 0.2778, "i": 0.2222, "l": 0.2222,
+    "n": 0.5562, "o": 0.5562, "p": 0.5562, "r": 0.3330, "s": 0.5000,
+    "t": 0.2778,
+}
+CAP_HEIGHT = 0.716  # em, the height of a capital, Arial and Helvetica alike
+DESCENDER = 0.212  # em, how far below the baseline a p reaches
+
+FONT_STACK = "Helvetica Neue, Helvetica, Arial, sans-serif"
+
+# What the logo is drawn in when nothing else says. GitHub renders this file
+# as an image, and in that context currentColor is black - which disappears
+# against a dark README - so a colour is set here and swapped with the
+# reader's colour scheme. The selector is svg:root, which matches the svg
+# only while it is the root of a document of its own. Pasted inline into a
+# page it matches nothing, and the mark inherits the colour of the text
+# around it; a bare :root would instead match that page's html element and
+# repaint everything on it.
+INK_LIGHT = "#1f2328"
+INK_DARK = "#e6edf3"
+
 
 def mark_pixels():
     """The mark as a set of the grid cells that are inked."""
@@ -82,7 +116,8 @@ def merged_rectangles():
     """The mark as a few rectangles rather than a hundred cells.
 
     Rows of adjacent cells are joined, and identical rows stacked, so the
-    vector form is a handful of shapes instead of a bitmap traced in XML.
+    raster export draws a handful of shapes instead of a hundred cells. The
+    vector form is drawn by mark_outline instead, as one path.
     """
     cells = mark_pixels()
     runs_by_row = {}
@@ -116,42 +151,112 @@ def merged_rectangles():
     return rects
 
 
-def write_svg(path, unit=24, gap=18):
-    """The mark beside the wordmark, in vector units."""
-    rects = merged_rectangles()
+def text_width(text, table, size, tracking=0.0):
+    """How wide a string sets, in vector units.
+
+    Tracking is counted between the letters and not after the last one,
+    which is the difference between the type fitting the box and the box
+    being one letter too narrow.
+    """
+    natural = sum(table[character] for character in text) * size
+    return natural + tracking * max(len(text) - 1, 0)
+
+
+def mark_outline(unit):
+    """The mark as one path: the plate, with the notches cut out of it.
+
+    The raster forms are drawn cell by cell, but the vector form is a single
+    even-odd path rather than a row of rectangles that share their edges.
+    Two abutting rectangles are antialiased one at a time, and where a
+    README scales the logo to some width in pixels the scale is fractional,
+    so the coverage either side of a shared edge does not add back up to one
+    and the seam shows as a pale hairline across the plate.
+    """
+
+    def box(x0, y0, x1, y1):
+        """One closed rectangle, from inclusive cell indices."""
+        x_start, y_start = x0 * unit, y0 * unit
+        x_end, y_end = (x1 + 1) * unit, (y1 + 1) * unit
+        return f"M{x_start} {y_start}H{x_end}V{y_end}H{x_start}Z"
+
+    return "".join([box(*PLATE)] + [box(*notch) for notch in NOTCHES])
+
+
+def write_svg(path, unit=24, gap=18, pad=24):
+    """The mark beside the wordmark, in vector units.
+
+    The width of the picture is measured from the type rather than assumed,
+    and every line is given a textLength, so a reader whose machine has none
+    of the fonts in the stack still gets the wordmark inside the frame
+    instead of running off the edge of it.
+    """
     mark_size = GRID * unit
     text_x = mark_size + gap
-    width = text_x + 360
     height = mark_size
 
-    lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="eMRTD">',
-        "  <title>eMRTD</title>",
-        '  <g fill="currentColor">',
+    word_size = round(mark_size * 0.46)
+    tag_size = round(mark_size * 0.15)
+    tracking = round(mark_size * 0.03)
+
+    word_length = text_width(WORDMARK, ADVANCE_BOLD, word_size, tracking)
+    tag_lengths = [
+        text_width(line, ADVANCE_REGULAR, tag_size) for line in TAGLINE
     ]
-    for x, y, w, h in rects:
+    column = max([word_length] + tag_lengths)
+    width = round(text_x + column + pad)
+
+    # The type is set as one block, optically centred against the mark: the
+    # block runs from the top of the capitals to the last baseline, because
+    # that is what the eye reads as its edges, not the ascenders and tails.
+    word_cap = word_size * CAP_HEIGHT
+    line_step = round(tag_size * 1.22)
+    word_to_tag = round(tag_size * 1.45)
+    block = word_cap + word_to_tag + line_step
+    word_y = round((height - block) / 2 + word_cap)
+    tag_ys = [word_y + word_to_tag, word_y + word_to_tag + line_step]
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+        f'height="{height}" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="eMRTD, {TAGLINE[0]} {TAGLINE[1]}">',
+        "  <title>eMRTD</title>",
+        "  <style>",
+        f"    svg:root {{ color: {INK_LIGHT} }}",
+        "    @media (prefers-color-scheme: dark) {",
+        f"      svg:root {{ color: {INK_DARK} }}",
+        "    }",
+        "  </style>",
+        f'  <path fill="currentColor" fill-rule="evenodd" '
+        f'd="{mark_outline(unit)}"/>',
+    ]
+    lines.append(
+        f'  <text x="{text_x}" y="{word_y}" fill="currentColor" '
+        f'font-family="{FONT_STACK}" font-size="{word_size}" '
+        f'font-weight="600" textLength="{word_length:.0f}" '
+        f'lengthAdjust="spacing">{WORDMARK}</text>'
+    )
+    for line, y, length in zip(TAGLINE, tag_ys, tag_lengths):
         lines.append(
-            f'    <rect x="{x * unit}" y="{y * unit}" '
-            f'width="{w * unit}" height="{h * unit}"/>'
+            f'  <text x="{text_x}" y="{y}" fill="currentColor" '
+            f'font-family="{FONT_STACK}" font-size="{tag_size}" '
+            f'opacity="0.72" textLength="{length:.0f}" '
+            f'lengthAdjust="spacing">{line}</text>'
         )
-    lines.append("  </g>")
-    lines.append(
-        f'  <text x="{text_x}" y="{height * 0.62:.0f}" fill="currentColor" '
-        f'font-family="Helvetica Neue, Helvetica, Arial, sans-serif" '
-        f'font-size="{mark_size * 0.46:.0f}" font-weight="600" '
-        f'letter-spacing="{mark_size * 0.03:.0f}">eMRTD</text>'
-    )
-    lines.append(
-        f'  <text x="{text_x + 3}" y="{height * 0.87:.0f}" fill="currentColor" '
-        f'font-family="Helvetica Neue, Helvetica, Arial, sans-serif" '
-        f'font-size="{mark_size * 0.15:.0f}" opacity="0.72">'
-        f"electronic passport reader for Flipper Zero</text>"
-    )
     lines.append("</svg>")
 
+    # The frame has to hold what was drawn in it. This is the assertion the
+    # drawing lacked when the wordmark was cropped, and it is cheap.
+    for label, length in [(WORDMARK, word_length)] + list(zip(TAGLINE, tag_lengths)):
+        assert text_x + length <= width - pad + 0.5, (
+            f"{path}: {label!r} sets {length:.0f} units wide and runs past "
+            f"the frame at {width - pad - text_x:.0f}"
+        )
+    assert tag_ys[-1] + tag_size * DESCENDER <= height, (
+        f"{path}: the tagline drops below the frame"
+    )
+
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"  {path.relative_to(ROOT)}  {len(rects)} rectangles, {width}x{height}")
+    print(f"  {path.relative_to(ROOT)}  one path and three lines, {width}x{height}")
 
 
 def write_raster_logo(path, scale=40):

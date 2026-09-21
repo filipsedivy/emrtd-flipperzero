@@ -1,16 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="618" height="240" viewBox="0 0 618 240" role="img" aria-label="eMRTD">
+<svg xmlns="http://www.w3.org/2000/svg" width="698" height="240" viewBox="0 0 698 240" role="img" aria-label="eMRTD, electronic passport reader for Flipper Zero">
   <title>eMRTD</title>
-  <g fill="currentColor">
-    <rect x="24" y="24" width="192" height="24"/>
-    <rect x="24" y="48" width="48" height="48"/>
-    <rect x="96" y="48" width="48" height="48"/>
-    <rect x="168" y="48" width="48" height="48"/>
-    <rect x="24" y="96" width="192" height="48"/>
-    <rect x="24" y="144" width="48" height="48"/>
-    <rect x="96" y="144" width="48" height="48"/>
-    <rect x="168" y="144" width="48" height="48"/>
-    <rect x="24" y="192" width="192" height="24"/>
-  </g>
-  <text x="258" y="149" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="110" font-weight="600" letter-spacing="7">eMRTD</text>
-  <text x="261" y="209" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" opacity="0.72">electronic passport reader for Flipper Zero</text>
+  <style>
+    svg:root { color: #1f2328 }
+    @media (prefers-color-scheme: dark) {
+      svg:root { color: #e6edf3 }
+    }
+  </style>
+  <path fill="currentColor" fill-rule="evenodd" d="M24 24H216V216H24ZM72 48H96V96H72ZM144 48H168V96H144ZM72 144H96V192H72ZM144 144H168V192H144Z"/>
+  <text x="258" y="111" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="110" font-weight="600" textLength="407" lengthAdjust="spacing">eMRTD</text>
+  <text x="258" y="163" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" opacity="0.72" textLength="416" lengthAdjust="spacing">electronic passport reader</text>
+  <text x="258" y="207" fill="currentColor" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" opacity="0.72" textLength="246" lengthAdjust="spacing">for Flipper Zero</text>
 </svg>

@@ -227,6 +227,13 @@ launcher. Nothing in it is thinner than two pixels, so it never degrades into
 a dither pattern, and every larger form is the same grid scaled by a whole
 number.
 
+The banner sets the wordmark in type, so the frame around it is measured from
+the font's own advance widths rather than guessed, and each line carries a
+`textLength`: a reader whose machine has none of the fonts in the stack gets
+the wordmark fitted to the frame instead of cropped at its edge. The ink
+follows the reader's colour scheme, because GitHub renders an SVG in a README
+as an image, and `currentColor` there is black.
+
 ```bash
 uv run --with pillow python assets/make_logo.py
 ```
@@ -235,7 +242,7 @@ uv run --with pillow python assets/make_logo.py
 | --- | --- |
 | `images/emrtd_10px.png` | The `fap_icon`; 10x10 and one bit, as the manifest requires |
 | `images/EmrtdChip_24x24.png` | The same mark at two pixels per cell, which the read view draws as `I_EmrtdChip_24x24` |
-| `assets/logo.svg` | The mark as nine rectangles beside the wordmark, not a traced bitmap |
+| `assets/logo.svg` | The mark as one even-odd path beside the wordmark, not a traced bitmap; 698x240, measured to fit |
 | `assets/logo.png`, `assets/logo.txt` | The raster and text forms of the same mark |
 
 `fbt` compiles every image in `images/` into `emrtd_icons.h` and does not
