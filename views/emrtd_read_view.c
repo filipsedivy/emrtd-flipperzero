@@ -22,6 +22,31 @@
 /** Longest static detail line the worker can hand us, plus room. */
 #define EMRTD_READ_VIEW_TEXT_MAX 40
 
+/*
+ * Screen furniture, shared by both branches of the draw callback.
+ *
+ * FontSecondary is haxrcorp4089: ascent 7, descent 2, and a line pitch of 11
+ * once canvas_current_font_height() has added its one row. The footer is drawn
+ * whatever the stage, so everything above it has to end above
+ * EMRTD_READ_VIEW_FOOTER_BASE less that ascent, which is row 54. The waiting
+ * screen used to run straight through it.
+ */
+#define EMRTD_READ_VIEW_TITLE_TOP   1
+#define EMRTD_READ_VIEW_BODY_TOP    14
+#define EMRTD_READ_VIEW_ICON_X      4
+#define EMRTD_READ_VIEW_ICON_Y      18
+#define EMRTD_READ_VIEW_HINT_X      32
+#define EMRTD_READ_VIEW_ACCESS_TOP  41
+#define EMRTD_READ_VIEW_FOOTER_BASE 61
+
+/*
+ * How wide a centred single line may be. elements_string_fit_width() trims to
+ * the budget and then appends the ellipsis, and canvas_string_width() is not
+ * additive across that join, so the result can come out a pixel or two over.
+ * 120 leaves enough margin that it still lands clear of both edges.
+ */
+#define EMRTD_READ_VIEW_LINE_MAX_PX 120
+
 typedef struct {
     EmrtdWorkerStage stage;
     EmrtdFileId file;
@@ -52,14 +77,33 @@ static void emrtd_read_view_format_size(char* out, size_t out_size, size_t bytes
 
 static void emrtd_read_view_draw_waiting(Canvas* canvas) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 64, 0, AlignCenter, AlignTop, "Waiting for document");
+    canvas_draw_str_aligned(
+        canvas, 64, EMRTD_READ_VIEW_TITLE_TOP, AlignCenter, AlignTop, "Waiting for document");
 
-    /* Centred over the two lines that say what to do with it. */
-    canvas_draw_icon(canvas, 52, 12, &I_EmrtdChip_24x24);
+    /*
+     * Beside the instruction rather than above it. A 24px icon and the three
+     * lines it takes to say where the document goes do not both fit between
+     * the title and the footer when they are stacked; stacked is what put the
+     * second line of the old two-line hint on top of "Back to stop". The icon
+     * is centred on the text block, which runs rows 14 to 45.
+     */
+    canvas_draw_icon(canvas, EMRTD_READ_VIEW_ICON_X, EMRTD_READ_VIEW_ICON_Y, &I_EmrtdChip_24x24);
 
     canvas_set_font(canvas, FontSecondary);
+    /*
+     * AlignLeft here leaves 128 - EMRTD_READ_VIEW_HINT_X pixels, and
+     * elements_multiline_text_aligned hyphenates any line wider than that
+     * rather than letting it run over. The three lines below measure 76, 61
+     * and 76 pixels against a column of 96, so the wrap never fires and the
+     * layout is what it says.
+     */
     elements_multiline_text_aligned(
-        canvas, 64, 40, AlignCenter, AlignTop, "Hold the data page flat\nagainst the back.");
+        canvas,
+        EMRTD_READ_VIEW_HINT_X,
+        EMRTD_READ_VIEW_BODY_TOP,
+        AlignLeft,
+        AlignTop,
+        "Hold the data page\nflat against the\nback of the Flipper");
 }
 
 static void emrtd_read_view_draw_callback(Canvas* canvas, void* context) {
@@ -73,7 +117,12 @@ static void emrtd_read_view_draw_callback(Canvas* canvas, void* context) {
     } else {
         canvas_set_font(canvas, FontPrimary);
         canvas_draw_str_aligned(
-            canvas, 64, 0, AlignCenter, AlignTop, emrtd_worker_stage_text(model->stage));
+            canvas,
+            64,
+            EMRTD_READ_VIEW_TITLE_TOP,
+            AlignCenter,
+            AlignTop,
+            emrtd_worker_stage_text(model->stage));
 
         /*
          * The second line names what is in flight. While a file is being read
@@ -119,18 +168,30 @@ static void emrtd_read_view_draw_callback(Canvas* canvas, void* context) {
         /* elements_progress_bar_with_text leaves the canvas in XOR mode. */
         canvas_set_color(canvas, ColorBlack);
 
+        /*
+         * The summary can be "PACE ECDH-GM/AES-128, brainpoolP256r1", which is
+         * 190 pixels - half again as wide as the screen. Centred, that is cut
+         * off mid-glyph at both ends and says less than nothing; an ellipsis
+         * at least admits there is more. report.txt carries the whole of it.
+         */
         canvas_set_font(canvas, FontSecondary);
+        FuriString* access_line = furi_string_alloc_set(
+            model->access[0] != '\0' ? model->access : "Access not settled yet");
+        elements_string_fit_width(canvas, access_line, EMRTD_READ_VIEW_LINE_MAX_PX);
         canvas_draw_str_aligned(
             canvas,
             64,
-            41,
+            EMRTD_READ_VIEW_ACCESS_TOP,
             AlignCenter,
             AlignTop,
-            model->access[0] != '\0' ? model->access : "Access method not settled yet");
+            furi_string_get_cstr(access_line));
+        furi_string_free(access_line);
     }
 
+    /* Baseline 61, not 63: at 63 the descender of the p falls off the screen. */
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str_aligned(canvas, 64, 63, AlignCenter, AlignBottom, "Back to stop");
+    canvas_draw_str_aligned(
+        canvas, 64, EMRTD_READ_VIEW_FOOTER_BASE, AlignCenter, AlignBottom, "Back to stop");
 }
 
 static bool emrtd_read_view_input_callback(InputEvent* event, void* context) {
