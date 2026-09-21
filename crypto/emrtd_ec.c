@@ -18,6 +18,8 @@
 
 #include "emrtd_ec.h"
 
+#include "../emrtd_wipe.h"
+
 #include <string.h>
 
 static const uint8_t secp192r1_p[24] = {
@@ -449,15 +451,20 @@ int emrtd_ec_point_x(
     const mbedtls_ecp_point* point,
     size_t coord_size,
     uint8_t* out) {
+    /*
+     * Both coordinates of the shared point land here and only x is wanted, so
+     * y would otherwise be left on the stack of the NFC thread - whose stack
+     * is a heap block that the allocator hands out again without zeroing.
+     */
     uint8_t encoded[1 + 2 * EMRTD_EC_COORD_MAX];
     size_t olen = 0;
-    const int ret = emrtd_ec_point_write(grp, point, encoded, sizeof(encoded), &olen);
-    if(ret != 0) {
-        return ret;
+    int ret = emrtd_ec_point_write(grp, point, encoded, sizeof(encoded), &olen);
+    if(ret == 0 && olen != 1 + 2 * coord_size) {
+        ret = MBEDTLS_ERR_ECP_BAD_INPUT_DATA;
     }
-    if(olen != 1 + 2 * coord_size) {
-        return MBEDTLS_ERR_ECP_BAD_INPUT_DATA;
+    if(ret == 0) {
+        memcpy(out, encoded + 1, coord_size);
     }
-    memcpy(out, encoded + 1, coord_size);
-    return 0;
+    emrtd_secure_wipe(encoded, sizeof(encoded));
+    return ret;
 }

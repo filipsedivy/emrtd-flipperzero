@@ -11,6 +11,8 @@
 #include "../protocol/emrtd_apdu.h"
 #include "emrtd_access.h"
 
+#include "../emrtd_wipe.h"
+
 /** RND.IC, the challenge the chip answers GET CHALLENGE with. */
 #define EMRTD_BAC_CHALLENGE_SIZE 8
 /** E.IFD || M.IFD, and the answer E.IC || M.IC. */
@@ -139,11 +141,11 @@ static EmrtdError emrtd_access_bac_authenticate(
     }
 
 cleanup:
-    memset(k_enc, 0, sizeof(k_enc));
-    memset(k_mac, 0, sizeof(k_mac));
-    memset(rnd_ifd, 0, sizeof(rnd_ifd));
-    memset(k_ifd, 0, sizeof(k_ifd));
-    memset(payload, 0, sizeof(payload));
+    emrtd_secure_wipe(k_enc, sizeof(k_enc));
+    emrtd_secure_wipe(k_mac, sizeof(k_mac));
+    emrtd_secure_wipe(rnd_ifd, sizeof(rnd_ifd));
+    emrtd_secure_wipe(k_ifd, sizeof(k_ifd));
+    emrtd_secure_wipe(payload, sizeof(payload));
     if(error != EmrtdErrorNone) {
         emrtd_sm_clear(out_session);
     }

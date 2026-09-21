@@ -15,6 +15,8 @@
 #include "emrtd_mac.h"
 #include "emrtd_rng.h"
 
+#include "../emrtd_wipe.h"
+
 /** S is RND.IFD || RND.IC || K.IFD, and E.IFD is its encryption (9303-11, 4.3.3). */
 #define EMRTD_BAC_S_SIZE       32
 /** E.IFD || M.IFD, and the chip's answer E.IC || M.IC, are both this long. */
@@ -64,7 +66,7 @@ static bool emrtd_bac_mac(const uint8_t key[16], const uint8_t* data, size_t len
     memcpy(padded, data, len);
     const size_t padded_len = emrtd_pad_iso9797_m2(padded, len, 8);
     const bool ok = emrtd_retail_mac(key, padded, padded_len, mac);
-    memset(padded, 0, sizeof(padded));
+    emrtd_secure_wipe(padded, sizeof(padded));
     return ok;
 }
 
@@ -100,12 +102,12 @@ EmrtdError emrtd_bac_derive_keys(
         error = EmrtdErrorInternal;
     }
 
-    memset(information, 0, sizeof(information));
-    memset(digest, 0, sizeof(digest));
-    memset(kseed, 0, sizeof(kseed));
+    emrtd_secure_wipe(information, sizeof(information));
+    emrtd_secure_wipe(digest, sizeof(digest));
+    emrtd_secure_wipe(kseed, sizeof(kseed));
     if(error != EmrtdErrorNone) {
-        memset(out_k_enc, 0, 16);
-        memset(out_k_mac, 0, 16);
+        emrtd_secure_wipe(out_k_enc, 16);
+        emrtd_secure_wipe(out_k_mac, 16);
     }
     return error;
 }
@@ -151,11 +153,11 @@ EmrtdError emrtd_bac_build_external_auth(
         error = EmrtdErrorInternal;
     }
 
-    memset(s, 0, sizeof(s));
-    memset(rnd_ifd_local, 0, sizeof(rnd_ifd_local));
-    memset(k_ifd_local, 0, sizeof(k_ifd_local));
+    emrtd_secure_wipe(s, sizeof(s));
+    emrtd_secure_wipe(rnd_ifd_local, sizeof(rnd_ifd_local));
+    emrtd_secure_wipe(k_ifd_local, sizeof(k_ifd_local));
     if(error != EmrtdErrorNone) {
-        memset(out, 0, EMRTD_BAC_PAYLOAD_SIZE);
+        emrtd_secure_wipe(out, EMRTD_BAC_PAYLOAD_SIZE);
     }
     return error;
 }
@@ -190,10 +192,10 @@ EmrtdError emrtd_bac_process_response(
         return EmrtdErrorInternal;
     }
     if(!emrtd_bac_equal(expected_mac, m_ic, sizeof(expected_mac))) {
-        memset(expected_mac, 0, sizeof(expected_mac));
+        emrtd_secure_wipe(expected_mac, sizeof(expected_mac));
         return EmrtdErrorWrongKey;
     }
-    memset(expected_mac, 0, sizeof(expected_mac));
+    emrtd_secure_wipe(expected_mac, sizeof(expected_mac));
 
     EmrtdError error = EmrtdErrorNone;
     uint8_t r[EMRTD_BAC_S_SIZE];
@@ -222,10 +224,10 @@ EmrtdError emrtd_bac_process_response(
         }
     }
 
-    memset(r, 0, sizeof(r));
-    memset(kseed, 0, sizeof(kseed));
-    memset(ks_enc, 0, sizeof(ks_enc));
-    memset(ks_mac, 0, sizeof(ks_mac));
-    memset(ssc, 0, sizeof(ssc));
+    emrtd_secure_wipe(r, sizeof(r));
+    emrtd_secure_wipe(kseed, sizeof(kseed));
+    emrtd_secure_wipe(ks_enc, sizeof(ks_enc));
+    emrtd_secure_wipe(ks_mac, sizeof(ks_mac));
+    emrtd_secure_wipe(ssc, sizeof(ssc));
     return error;
 }

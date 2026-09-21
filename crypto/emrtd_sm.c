@@ -14,6 +14,8 @@
 #include "../transport/emrtd_transceiver.h"
 #include "emrtd_mac.h"
 
+#include "../emrtd_wipe.h"
+
 /* The data objects of a protected APDU, ISO/IEC 7816-4 table 49. */
 #define EMRTD_DO_CRYPTOGRAM_PADDED 0x87 /**< Cryptogram with a padding indicator. */
 #define EMRTD_DO_CRYPTOGRAM_PLAIN  0x85 /**< Cryptogram without one. */
@@ -175,7 +177,7 @@ void emrtd_sm_init(
     if(sm == NULL) {
         return;
     }
-    memset(sm, 0, sizeof(*sm));
+    emrtd_secure_wipe(sm, sizeof(*sm));
 
     const size_t key_size = emrtd_cipher_key_size(cipher);
     if(key_size == 0 || ks_enc == NULL || ks_mac == NULL) {
@@ -196,7 +198,7 @@ void emrtd_sm_clear(EmrtdSm* sm) {
     if(sm == NULL) {
         return;
     }
-    memset(sm, 0, sizeof(*sm));
+    emrtd_secure_wipe(sm, sizeof(*sm));
 }
 
 size_t emrtd_sm_command_overhead(const EmrtdSm* sm, size_t data_len) {
@@ -359,9 +361,9 @@ EmrtdError emrtd_sm_protect(
         error = emrtd_apdu_encode(&protected_command, out, out_size, out_len);
     }
 
-    memset(mac_input, 0, sizeof(mac_input));
-    memset(payload, 0, sizeof(payload));
-    memset(mac, 0, sizeof(mac));
+    emrtd_secure_wipe(mac_input, sizeof(mac_input));
+    emrtd_secure_wipe(payload, sizeof(payload));
+    emrtd_secure_wipe(mac, sizeof(mac));
     if(error != EmrtdErrorNone) {
         *out_len = 0;
     }
@@ -500,8 +502,8 @@ EmrtdError emrtd_sm_unprotect(
     if(error == EmrtdErrorNone && !emrtd_sm_equal(mac, checksum.value, sizeof(mac))) {
         error = EmrtdErrorSecureMessaging;
     }
-    memset(mac_input, 0, sizeof(mac_input));
-    memset(mac, 0, sizeof(mac));
+    emrtd_secure_wipe(mac_input, sizeof(mac_input));
+    emrtd_secure_wipe(mac, sizeof(mac));
     if(error != EmrtdErrorNone) {
         return error;
     }
@@ -521,7 +523,7 @@ EmrtdError emrtd_sm_unprotect(
             error = EmrtdErrorSecureMessaging;
         }
         if(error != EmrtdErrorNone) {
-            memset(out, 0, cryptogram_len);
+            emrtd_secure_wipe(out, cryptogram_len);
             return error;
         }
     }

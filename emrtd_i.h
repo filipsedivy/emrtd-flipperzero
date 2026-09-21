@@ -31,6 +31,7 @@
 
 #include "emrtd.h"
 #include "emrtd_error.h"
+#include "emrtd_wipe.h"
 #include "scenes/emrtd_scene.h"
 #include "views/emrtd_date_input.h"
 #include "views/emrtd_read_view.h"

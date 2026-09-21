@@ -5,6 +5,8 @@
 
 #include "emrtd_export.h"
 
+#include "../emrtd_wipe.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -213,6 +215,10 @@ void emrtd_export_free(EmrtdExport* export_ctx) {
     if(export_ctx->storage != NULL) {
         furi_record_close(RECORD_STORAGE);
     }
+
+    /* The path is built from the document number, so the block is cleared
+     * before it goes back to an allocator that does not zero on free. */
+    emrtd_secure_wipe(export_ctx, sizeof(*export_ctx));
     free(export_ctx);
 }
 

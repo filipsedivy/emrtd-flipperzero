@@ -10,6 +10,8 @@
 #include <mbedtls/sha1.h>
 #include <mbedtls/sha256.h>
 
+#include "../emrtd_wipe.h"
+
 void emrtd_des_adjust_parity(uint8_t* key, size_t len) {
     for(size_t i = 0; i < len; i++) {
         uint8_t byte = key[i] & 0xFE;
@@ -66,7 +68,7 @@ bool emrtd_kdf(
         emrtd_des_adjust_parity(out_key, 16);
     }
 
-    memset(digest, 0, sizeof(digest));
+    emrtd_secure_wipe(digest, sizeof(digest));
     return true;
 }
 

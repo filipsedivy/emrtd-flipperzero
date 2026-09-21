@@ -5,6 +5,8 @@
 
 #include "emrtd_worker.h"
 
+#include "../emrtd_wipe.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -701,7 +703,7 @@ static size_t emrtd_worker_digest_finish(EmrtdWorker* worker) {
 
 static void emrtd_worker_digest_abort(EmrtdWorker* worker) {
     if(emrtd_worker_digest_finish(worker) > 0) {
-        memset(worker->digest_value, 0, sizeof(worker->digest_value));
+        emrtd_secure_wipe(worker->digest_value, sizeof(worker->digest_value));
     }
 }
 
@@ -952,7 +954,7 @@ static EmrtdError emrtd_worker_stream_file(
 
     const size_t digest_len = emrtd_worker_digest_finish(worker);
     emrtd_worker_check_hash(worker, info, entry, digest_len);
-    memset(worker->digest_value, 0, sizeof(worker->digest_value));
+    emrtd_secure_wipe(worker->digest_value, sizeof(worker->digest_value));
 
     return EmrtdErrorNone;
 }
@@ -1111,7 +1113,7 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
 
     if(parse.data != NULL) {
         /* The data groups hold personal details; do not leave them on the heap. */
-        memset(parse.data, 0, parse.capacity);
+        emrtd_secure_wipe(parse.data, parse.capacity);
         free(parse.data);
     }
 
@@ -1220,7 +1222,7 @@ static EmrtdError emrtd_worker_try_driver(
     FURI_LOG_I(TAG, "Trying %s", driver->name);
 
     EmrtdSm session;
-    memset(&session, 0, sizeof(session));
+    emrtd_secure_wipe(&session, sizeof(session));
     EmrtdAccessOutcome outcome;
     memset(&outcome, 0, sizeof(outcome));
 
@@ -1239,7 +1241,7 @@ static EmrtdError emrtd_worker_try_driver(
 
     worker->sm = session;
     worker->sm_active = true;
-    memset(&session, 0, sizeof(session));
+    emrtd_secure_wipe(&session, sizeof(session));
 
     if(driver->reselect_application) {
         /*
@@ -1462,7 +1464,7 @@ static void emrtd_worker_read(EmrtdWorker* worker) {
     if(memmgr_heap_get_max_free_block() >=
        EMRTD_WORKER_CARD_ACCESS_MAX + EMRTD_WORKER_BLOCK_HEADER) {
         card_access = malloc(EMRTD_WORKER_CARD_ACCESS_MAX);
-        memset(card_access, 0, EMRTD_WORKER_CARD_ACCESS_MAX);
+        emrtd_secure_wipe(card_access, EMRTD_WORKER_CARD_ACCESS_MAX);
         card_access_len =
             emrtd_worker_read_card_access(worker, card_access, EMRTD_WORKER_CARD_ACCESS_MAX);
     } else {
@@ -1501,7 +1503,7 @@ static void emrtd_worker_read(EmrtdWorker* worker) {
 
     error = emrtd_worker_authenticate(worker, card_access, card_access_len);
     if(card_access != NULL) {
-        memset(card_access, 0, EMRTD_WORKER_CARD_ACCESS_MAX);
+        emrtd_secure_wipe(card_access, EMRTD_WORKER_CARD_ACCESS_MAX);
         free(card_access);
     }
     if(error != EmrtdErrorNone) {
@@ -1624,10 +1626,10 @@ static NfcCommand emrtd_worker_finish(EmrtdWorker* worker) {
      * The worker is started and stopped over and over, and these buffers were
      * last holding the plaintext of somebody's data page.
      */
-    memset(worker->command, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    memset(worker->response, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    memset(worker->lookahead, 0, EMRTD_WORKER_DG2_LOOKAHEAD);
-    memset(worker->digest_value, 0, sizeof(worker->digest_value));
+    emrtd_secure_wipe(worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    emrtd_secure_wipe(worker->response, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    emrtd_secure_wipe(worker->lookahead, EMRTD_WORKER_DG2_LOOKAHEAD);
+    emrtd_secure_wipe(worker->digest_value, sizeof(worker->digest_value));
 
     furi_event_flag_set(worker->events, EMRTD_WORKER_FLAG_FINISHED);
     return NfcCommandStop;
@@ -1928,10 +1930,10 @@ static int32_t emrtd_worker_demo_thread(void* context) {
      */
     worker->sm_active = false;
     emrtd_sm_clear(&worker->sm);
-    memset(worker->command, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    memset(worker->response, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    memset(worker->lookahead, 0, EMRTD_WORKER_DG2_LOOKAHEAD);
-    memset(worker->digest_value, 0, sizeof(worker->digest_value));
+    emrtd_secure_wipe(worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    emrtd_secure_wipe(worker->response, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    emrtd_secure_wipe(worker->lookahead, EMRTD_WORKER_DG2_LOOKAHEAD);
+    emrtd_secure_wipe(worker->digest_value, sizeof(worker->digest_value));
 
     emrtd_demo_free(demo);
     /* The port belongs to the chip that has just been freed. */
@@ -1969,7 +1971,7 @@ EmrtdWorker* emrtd_worker_alloc(EmrtdReadResult* result) {
     furi_check(result);
 
     EmrtdWorker* worker = malloc(sizeof(EmrtdWorker));
-    memset(worker, 0, sizeof(EmrtdWorker));
+    emrtd_secure_wipe(worker, sizeof(EmrtdWorker));
     worker->result = result;
 
     worker->events = furi_event_flag_alloc();
@@ -1996,15 +1998,15 @@ void emrtd_worker_free(EmrtdWorker* worker) {
     furi_event_flag_free(worker->events);
 
     /* Both buffers have held plaintext from the document. */
-    memset(worker->command, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    memset(worker->response, 0, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    memset(worker->lookahead, 0, EMRTD_WORKER_DG2_LOOKAHEAD);
+    emrtd_secure_wipe(worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    emrtd_secure_wipe(worker->response, EMRTD_WORKER_APDU_BUFFER_SIZE);
+    emrtd_secure_wipe(worker->lookahead, EMRTD_WORKER_DG2_LOOKAHEAD);
     free(worker->command);
     free(worker->response);
     free(worker->lookahead);
 
     emrtd_sm_clear(&worker->sm);
-    memset(worker, 0, sizeof(EmrtdWorker));
+    emrtd_secure_wipe(worker, sizeof(EmrtdWorker));
     free(worker);
 }
 
@@ -2032,7 +2034,7 @@ void emrtd_worker_start(EmrtdWorker* worker, struct Nfc* nfc) {
     furi_check(nfc);
     furi_check(!worker->running);
 
-    memset(worker->result, 0, sizeof(EmrtdReadResult));
+    emrtd_secure_wipe(worker->result, sizeof(EmrtdReadResult));
     worker->files_total = 0;
     worker->files_done = 0;
     worker->activation_failures = 0;
@@ -2055,7 +2057,7 @@ void emrtd_worker_start_demo(EmrtdWorker* worker) {
     furi_check(worker);
     furi_check(!worker->running);
 
-    memset(worker->result, 0, sizeof(EmrtdReadResult));
+    emrtd_secure_wipe(worker->result, sizeof(EmrtdReadResult));
     worker->files_total = 0;
     worker->files_done = 0;
     worker->activation_failures = 0;

@@ -22,6 +22,8 @@
 #include "emrtd_mac.h"
 #include "emrtd_rng.h"
 
+#include "../emrtd_wipe.h"
+
 /* The dynamic authentication data objects of ICAO 9303-11 table 4. */
 #define EMRTD_PACE_DO_DYNAMIC   0x7C /**< The wrapper every step travels in. */
 #define EMRTD_PACE_DO_NONCE     0x80 /**< Response: the encrypted nonce. */
@@ -125,7 +127,7 @@ static EmrtdError emrtd_pace_password_key_for_cipher(
             }
             password_len = 20;
         }
-        memset(information, 0, sizeof(information));
+        emrtd_secure_wipe(information, sizeof(information));
     }
 
     if(error == EmrtdErrorNone &&
@@ -133,7 +135,7 @@ static EmrtdError emrtd_pace_password_key_for_cipher(
         error = EmrtdErrorInternal;
     }
 
-    memset(password, 0, sizeof(password));
+    emrtd_secure_wipe(password, sizeof(password));
     return error;
 }
 
@@ -465,9 +467,9 @@ EmrtdError emrtd_pace_run(
     mbedtls_ecp_point_init(&agreement_ic);
     mbedtls_ecp_point_init(&agreement_shared);
 
-    memset(kpi, 0, sizeof(kpi));
-    memset(ks_enc, 0, sizeof(ks_enc));
-    memset(ks_mac, 0, sizeof(ks_mac));
+    emrtd_secure_wipe(kpi, sizeof(kpi));
+    emrtd_secure_wipe(ks_enc, sizeof(ks_enc));
+    emrtd_secure_wipe(ks_mac, sizeof(ks_mac));
 
     const uint8_t* peer = NULL;
     size_t peer_len = 0;
@@ -630,7 +632,7 @@ EmrtdError emrtd_pace_run(
     }
 
     /* PACE starts its Secure Messaging counter at zero (9303-11, 9.8.2). */
-    memset(ssc, 0, sizeof(ssc));
+    emrtd_secure_wipe(ssc, sizeof(ssc));
     emrtd_sm_init(out_session, info->cipher, ks_enc, ks_mac, ssc);
     if(!out_session->established) {
         error = EmrtdErrorInternal;
@@ -651,16 +653,16 @@ cleanup:
     /* Frees the domain parameters and the table mbedtls_ecp_mul() cached in it. */
     mbedtls_ecp_group_free(&group);
 
-    memset(kpi, 0, sizeof(kpi));
-    memset(nonce, 0, sizeof(nonce));
-    memset(shared_x, 0, sizeof(shared_x));
-    memset(ks_enc, 0, sizeof(ks_enc));
-    memset(ks_mac, 0, sizeof(ks_mac));
-    memset(token_ifd, 0, sizeof(token_ifd));
-    memset(token_expected, 0, sizeof(token_expected));
+    emrtd_secure_wipe(kpi, sizeof(kpi));
+    emrtd_secure_wipe(nonce, sizeof(nonce));
+    emrtd_secure_wipe(shared_x, sizeof(shared_x));
+    emrtd_secure_wipe(ks_enc, sizeof(ks_enc));
+    emrtd_secure_wipe(ks_mac, sizeof(ks_mac));
+    emrtd_secure_wipe(token_ifd, sizeof(token_ifd));
+    emrtd_secure_wipe(token_expected, sizeof(token_expected));
     if(io != NULL) {
         /* The token inputs carry no secret, but the buffer is wiped all the same. */
-        memset(io, 0, sizeof(*io));
+        emrtd_secure_wipe(io, sizeof(*io));
         free(io);
     }
 

@@ -175,6 +175,7 @@ static Emrtd* emrtd_alloc(void) {
         app->config.credentials.date_of_expiry,
         "300701",
         sizeof(app->config.credentials.date_of_expiry));
+
 #endif
 
     emrtd_settings_load(app);
@@ -248,9 +249,9 @@ static void emrtd_free(Emrtd* app) {
      * their name and date of birth. Neither has any business staying in the
      * heap for the next application to allocate.
      */
-    memset(&app->config.credentials, 0, sizeof(app->config.credentials));
-    memset(&app->result, 0, sizeof(app->result));
-    memset(app->text_store, 0, sizeof(app->text_store));
+    emrtd_secure_wipe(&app->config.credentials, sizeof(app->config.credentials));
+    emrtd_secure_wipe(&app->result, sizeof(app->result));
+    emrtd_secure_wipe(app->text_store, sizeof(app->text_store));
 
     free(app);
 }

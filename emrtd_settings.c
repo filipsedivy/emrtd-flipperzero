@@ -19,6 +19,7 @@
 #include <lib/flipper_format/flipper_format.h>
 
 #include "access/emrtd_access.h"
+#include "emrtd_wipe.h"
 
 #define TAG "EmrtdSettings"
 
@@ -110,6 +111,9 @@ bool emrtd_settings_load(Emrtd* app) {
     FuriString* scratch = furi_string_alloc();
     EmrtdCredentials* credentials = &app->config.credentials;
     bool loaded = false;
+    /* Hoisted so that the wipe below it is in scope; it carries the document
+     * number and the CAN on their way out of the file. */
+    char buffer[EMRTD_DOC_NUMBER_MAX + 1];
 
     do {
         if(!flipper_format_file_open_existing(file, EMRTD_SETTINGS_PATH)) {
@@ -125,8 +129,6 @@ bool emrtd_settings_load(Emrtd* app) {
             FURI_LOG_W(TAG, "Settings file is not ours, or is a later version");
             break;
         }
-
-        char buffer[EMRTD_DOC_NUMBER_MAX + 1];
 
         if(emrtd_settings_read_field(file, scratch, EMRTD_KEY_DOC_NUMBER, buffer, sizeof(buffer)) &&
            emrtd_settings_is_mrz_string(buffer)) {
@@ -177,6 +179,8 @@ bool emrtd_settings_load(Emrtd* app) {
         loaded = true;
     } while(false);
 
+    /* Both held the document number and the CAN on their way to the struct. */
+    emrtd_secure_wipe(buffer, sizeof(buffer));
     furi_string_free(scratch);
     flipper_format_free(file);
 
@@ -278,7 +282,7 @@ bool emrtd_settings_delete(Emrtd* app) {
         removed = storage_simply_remove(app->storage, EMRTD_SETTINGS_PATH);
     }
 
-    memset(&app->config.credentials, 0, sizeof(app->config.credentials));
+    emrtd_secure_wipe(&app->config.credentials, sizeof(app->config.credentials));
 
     return removed;
 }
