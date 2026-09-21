@@ -17,8 +17,11 @@
 
 #include "../../access/emrtd_access.h"
 #include "../../protocol/emrtd_apdu.h"
+#include "../../protocol/emrtd_lds.h"
 #include "../../transport/emrtd_transceiver.h"
 #include "emrtd_sim.h"
+
+#include <mbedtls/sha256.h>
 
 static EmrtdCredentials specimen(void) {
     EmrtdCredentials credentials;
@@ -257,7 +260,9 @@ static void check_file(EmrtdSim* chip, EmrtdSm* session, uint16_t fid) {
 
     TEST_EQ_INT(select_file(emrtd_sim_transceiver(chip), session, fid), EmrtdErrorNone);
 
-    uint8_t data[512];
+    /* Large enough for EF.SOD, which is the one file here that needs more
+     * than a handful of frames. */
+    uint8_t data[2048];
     size_t len = 0;
     TEST_EQ_INT(
         read_selected(emrtd_sim_transceiver(chip), session, data, sizeof(data), &len),
@@ -425,6 +430,63 @@ static void test_session_ends_with_the_read(void) {
     emrtd_sim_free(chip);
 }
 
+/**
+ * The security object the chip serves has to describe the chip.
+ *
+ * EF.SOD is the one file the simulator does not simply make up: it carries a
+ * real LDSSecurityObject whose DG1 entry is rewritten with the hash of the
+ * DG1 that particular chip serves, and DG1 is built from the credentials it
+ * was given. Get that patch wrong - the wrong offset, the wrong bytes hashed,
+ * the wrong digest - and nothing fails until a reader compares the two and
+ * reports a document that has been tampered with. So it is compared here.
+ */
+static void test_security_object_describes_the_chip(void) {
+    emrtd_test_begin("the security object lists the hash of the DG1 this chip serves");
+
+    /* Deliberately not the default credentials, so that a frozen hash which
+     * happened to suit the specimen would still be caught. */
+    EmrtdCredentials credentials;
+    memset(&credentials, 0, sizeof(credentials));
+    strcpy(credentials.document_number, "T220001293");
+    strcpy(credentials.date_of_birth, "640812");
+    strcpy(credentials.date_of_expiry, "101031");
+
+    EmrtdSimConfig config;
+    memset(&config, 0, sizeof(config));
+    config.access = EmrtdSimAccessBoth;
+    config.credentials = credentials;
+    EmrtdSim* const chip = emrtd_sim_alloc(&config);
+    TEST_CHECK(chip != NULL);
+
+    size_t sod_len = 0;
+    const uint8_t* const sod_bytes = emrtd_sim_file(chip, EMRTD_SIM_FID_SOD, &sod_len);
+    TEST_CHECK(sod_bytes != NULL);
+    TEST_EQ_INT(sod_len, 1426);
+
+    EmrtdEfSod sod;
+    TEST_EQ_INT(emrtd_lds_parse_sod(sod_bytes, sod_len, &sod), EmrtdErrorNone);
+    TEST_EQ_STR(sod.digest_algorithm, "SHA-256");
+    TEST_CHECK(sod.digest_supported);
+    TEST_EQ_INT(sod.digest_len, 32);
+    TEST_CHECK(sod.has_certificate);
+
+    size_t dg1_len = 0;
+    const uint8_t* const dg1 = emrtd_sim_file(chip, EMRTD_SIM_FID_DG1, &dg1_len);
+    TEST_CHECK(dg1 != NULL);
+
+    uint8_t digest[32];
+    TEST_EQ_INT(mbedtls_sha256(dg1, dg1_len, digest, 0), 0);
+
+    const EmrtdSodHash* const listed = emrtd_lds_sod_hash_for(&sod, 1);
+    TEST_CHECK(listed != NULL);
+    if(listed != NULL) {
+        TEST_EQ_INT(listed->hash_len, sizeof(digest));
+        TEST_CHECK(memcmp(listed->hash, digest, sizeof(digest)) == 0);
+    }
+
+    emrtd_sim_free(chip);
+}
+
 void test_suite_session(void) {
     test_frame_sizes();
     test_exchange_guards();
@@ -432,4 +494,5 @@ void test_suite_session(void) {
     test_read_over_bac();
     test_read_in_small_frames();
     test_session_ends_with_the_read();
+    test_security_object_describes_the_chip();
 }

@@ -64,5 +64,12 @@ Use this on your own document, or with the explicit consent of the person
 whose document it is. Local rules on biometric data apply to whatever you
 export.
 
+## About the screenshots
+
+They are of a document that does not exist. Taking them from a real one would
+publish somebody's document number and photograph, so they show the ICAO Doc
+9303 specimen instead - Anna Maria Eriksson of Utopia, who is not a person.
+The screens are the application's own; the document on them is not.
+
 Source, documentation and issues:
 <https://github.com/filipsedivy/emrtd-flipperzero>
