@@ -107,6 +107,12 @@ key is derived from what is printed on the data page - but consent is not
 implied by possession, and a facial image is biometric data. Whatever you
 export is subject to the rules that apply where you are.
 
+## Support
+
+The work behind this is a chip, a specification and a lot of measuring. If it
+saved you some of that, you can buy me a coffee:
+[buymeacoffee.com/filipsedivy](https://buymeacoffee.com/filipsedivy).
+
 ## License
 
 MIT - see [LICENSE](LICENSE).
