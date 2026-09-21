@@ -13,6 +13,8 @@ ufbt cli                           # the Flipper's serial console, for the logs
 The application links against the firmware's own mbed TLS
 (`fap_libs=["mbedtls"]`), so it is tied to the API version it was built for.
 Build against the release channel unless you are deliberately testing another.
+[docs/install.md](docs/install.md) has the SDK commands for Unleashed and
+Momentum, and how to keep more than one deployed at a time.
 
 ## Tests
 
@@ -91,6 +93,7 @@ what `fap_icon` accepts. Every other image in `images/` has to be one bit and
 free of metadata as well, or `ufbt lint` rejects it - and `fbt` does not strip
 an icon that nothing draws, so an image is added only when something uses it.
 The generator checks all of this after it writes each file.
+[docs/branding.md](docs/branding.md) says why the mark is shaped the way it is.
 
 ## Documents and data
 
