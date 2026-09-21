@@ -51,6 +51,22 @@ a chip are all out of reach, for reasons that are measured rather than guessed.
 nothing more.** The signature over EF.SOD is not checked, so this reader cannot
 tell a genuine document from a well made copy of one.
 
+## Tested documents
+
+| Document | Access | Data groups | Hashes |
+| --- | --- | --- | --- |
+| Czech passport | BAC, 3DES, MRZ key - EF.CardAccess could not be read | DG1, DG2, DG14, DG15; DG3 announced and skipped | all four match |
+
+That document's DG14 declares PACE-ECDH-GM with AES-128 over NIST P-256, but
+DG14 is read only once a session is open, so the declaration arrives long after
+the moment it would have been useful. **PACE has not yet run against a chip**:
+it is checked against the ICAO test vectors and the host simulator, and nothing
+here says more than that.
+
+Rows come from pull requests - [CONTRIBUTING.md](CONTRIBUTING.md) says what may
+be written down about a document, and the pull request template already asks
+for it.
+
 ## Install
 
 ```bash
