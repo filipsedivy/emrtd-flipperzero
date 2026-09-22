@@ -161,36 +161,6 @@ static Emrtd* emrtd_alloc(void) {
     app->remember_credentials = false;
     app->wipe_after_read = true;
 
-#ifdef EMRTD_DEMO
-    /*
-     * The ICAO specimen, so that the demo build reads on the first press with
-     * nothing typed and the Document screen has something to show. These are
-     * the credentials the simulated chip's document is built from; see
-     * demo/emrtd_demo.h. The settings file is a separate one, so nothing a
-     * real run remembered can reach this build or be overwritten by it.
-     */
-    strlcpy(
-        app->config.credentials.document_number,
-        "L898902C",
-        sizeof(app->config.credentials.document_number));
-    strlcpy(
-        app->config.credentials.date_of_birth,
-        "690806",
-        sizeof(app->config.credentials.date_of_birth));
-    strlcpy(
-        app->config.credentials.date_of_expiry,
-        "300701",
-        sizeof(app->config.credentials.date_of_expiry));
-
-    /*
-     * ANNA MARIA ERIKSSON is a published specimen and not anybody's secret, and
-     * the demo build exists to be read over and over while the screens are
-     * photographed. Clearing the credentials after the first read would leave
-     * the second press with nothing to read with.
-     */
-    app->wipe_after_read = false;
-#endif
-
     emrtd_settings_load(app);
 
     return app;

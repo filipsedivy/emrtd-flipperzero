@@ -20,7 +20,7 @@ it against the published ICAO test vectors without a device in reach.
      |
   transport/         one port: move an APDU, bring back the answer
      |
-  sim/ demo/         the other thing behind that port: a chip with no radio
+  sim/               the other thing behind that port: a chip with no radio
 ```
 
 Nothing points upwards. `crypto` and `protocol` sit side by side because each
@@ -38,8 +38,7 @@ names a cipher - and they are free of everything above.
 | `worker/` | `emrtd_worker` (the read, on the NFC stack's thread) and `emrtd_export` (the SD card) |
 | `views/` | `emrtd_read_view` (progress) and `emrtd_date_input` (a date as three fields) |
 | `scenes/` | one file per scene, generated into an enum and a handler table by `emrtd_scene_config.h` |
-| `sim/` | `emrtd_sim`, a passport chip simulated at the APDU level, behind the same port the radio is behind |
-| `demo/` | `emrtd_demo`, which configures that chip and slows it to human speed. Compiled only into the demo build |
+| `sim/` | `emrtd_sim`, a passport chip simulated at the APDU level, behind the same port the radio is behind. Driven by the host suite only; the package does not compile it |
 
 ## The transceiver port
 
@@ -51,16 +50,11 @@ a small set of files of its own. Because the port is the only way down, the
 same PACE run that opens a real passport can be exercised on a host with a
 sanitizer attached.
 
-The simulated chip has two callers. The host suite drives it directly. The
-demo build - `EMRTD_DEMO=1 ufbt`, a separate package that exists so the
-screens can be photographed for the application catalogue without a document
-in hand - drives it through `demo/emrtd_demo.c`, which adds the credentials to
-build the document from and a delay per exchange, because a chip that answers
-in microseconds would take every progress screen past before the display had
-drawn. Everything above the port is the real thing in both cases; only the
-radio is absent. The released package compiles neither directory, and there is
-no switch in the user interface that reaches them: a simulation is a way of
-photographing the application, never a feature of it.
+The simulated chip has one caller, and that is the host suite, which drives it
+directly. Everything above the port is the real thing there; only the radio is
+absent. The released package does not compile `sim/` at all, and there is no
+switch in the user interface that reaches it: a simulation is a way of testing
+the application, never a feature of it.
 
 The port also carries the two frame sizes - `fsc`, what the card announced in
 its ATS, and `fsd`, what the reader can receive - because on this platform

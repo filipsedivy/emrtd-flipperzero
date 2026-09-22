@@ -26,10 +26,6 @@
 #include "../transport/emrtd_iso14443_4.h"
 #include "emrtd_export.h"
 
-#ifdef EMRTD_DEMO
-#include "../demo/emrtd_demo.h"
-#endif
-
 #define TAG "EmrtdWorker"
 
 /** Room for one command and one response, envelope included. */
@@ -98,24 +94,6 @@
  * path four kilobytes.
  */
 #define EMRTD_WORKER_STACK_SIZE (3u * 1024u)
-
-#ifdef EMRTD_DEMO
-/*
- * Stack for the demo build's read.
- *
- * On the radio path the read runs inside the poller callback, on the NFC
- * stack's own thread, and the control thread above only waits for it. The
- * demo has no poller, so the read happens on this thread instead - and with
- * both ends of PACE on it, the reader's and the simulated chip's, nested one
- * inside the other. Eight kilobytes is what the NFC thread gives the reader
- * alone; this is that with room for the chip on top, and the figure is
- * checked against furi_thread_get_stack_space() at the end of every demo run.
- */
-#define EMRTD_WORKER_DEMO_STACK_SIZE (10u * 1024u)
-
-/** Slice the waiting screen is held in, so that Back still answers at once. */
-#define EMRTD_WORKER_DEMO_WAIT_SLICE_MS 50u
-#endif
 
 /** Set from the poller callback once the read has finished, one way or another. */
 #define EMRTD_WORKER_FLAG_FINISHED (1UL << 0)
@@ -1863,116 +1841,6 @@ static int32_t emrtd_worker_thread(void* context) {
     return 0;
 }
 
-#ifdef EMRTD_DEMO
-
-/* --- The demo read ------------------------------------------------------- */
-
-/**
- * The same read, against a chip that answers over a function pointer.
- *
- * This mirrors emrtd_worker_thread() with the radio taken out: there is
- * nothing to detect, no poller to start and stop, and therefore no need for
- * the finished flag, because the read runs on this thread rather than on the
- * NFC stack's. What it must not do is take a shortcut around anything above
- * the transceiver - the sequence, the reports, the export and the scrubbing
- * are the ones the real read performs, or the screens being photographed
- * would not be the screens the application draws.
- */
-static int32_t emrtd_worker_demo_thread(void* context) {
-    EmrtdWorker* worker = context;
-
-    /*
-     * Held on the waiting screen for a moment. A chip that is simply there
-     * would put the application on its results before the first frame had
-     * been drawn, and this is the screen a person sees for longest in real
-     * use, so it is the one that most needs to be photographable.
-     */
-    emrtd_worker_report(worker, EmrtdWorkerStageWaitingForCard, EmrtdFileCom, 0, 0, 0, NULL);
-    for(uint32_t waited = 0; waited < EMRTD_DEMO_WAITING_MS && !worker->stop_requested;
-        waited += EMRTD_WORKER_DEMO_WAIT_SLICE_MS) {
-        furi_delay_ms(EMRTD_WORKER_DEMO_WAIT_SLICE_MS);
-    }
-    if(worker->stop_requested) {
-        worker->result->error = EmrtdErrorCancelled;
-        emrtd_worker_report(worker, EmrtdWorkerStageError, EmrtdFileCom, 0, 0, 0, NULL);
-        return 0;
-    }
-
-    /* Export to SD is the master switch here too; see the note above. */
-    if(worker->config.export_to_sd) {
-        worker->export_ctx = emrtd_export_alloc(
-            worker->config.credentials.document_number, worker->config.write_trace);
-    }
-
-    EmrtdDemo* const demo = emrtd_demo_alloc(&worker->config.credentials);
-    if(demo == NULL) {
-        /* Nothing was read and nothing can be; say so the way the radio path
-         * would if the card never answered. */
-        worker->result->error = EmrtdErrorInternal;
-        if(worker->export_ctx != NULL) {
-            emrtd_export_free(worker->export_ctx);
-            worker->export_ctx = NULL;
-        }
-        emrtd_worker_report(worker, EmrtdWorkerStageError, EmrtdFileCom, 0, 0, 0, NULL);
-        return 0;
-    }
-
-    worker->transceiver = emrtd_demo_transceiver(demo);
-    if(worker->export_ctx != NULL && worker->config.write_trace) {
-        emrtd_demo_set_trace(demo, emrtd_worker_trace, worker);
-        emrtd_export_trace_note(worker->export_ctx, "  (simulated chip, demo build)");
-    }
-
-    emrtd_worker_read(worker);
-    emrtd_worker_export_result(worker);
-
-    if(worker->result->error != EmrtdErrorNone) {
-        FURI_LOG_W(TAG, "Demo read ended: %s", emrtd_error_text(worker->result->error));
-    }
-
-    /*
-     * The scrubbing emrtd_worker_finish() does, without the part that unbinds
-     * a transport this read never bound. The buffers held a document that was
-     * made up, but the worker is started again and again and the next one may
-     * not be.
-     */
-    worker->sm_active = false;
-    emrtd_sm_clear(&worker->sm);
-    emrtd_secure_wipe(worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    emrtd_secure_wipe(worker->response, EMRTD_WORKER_APDU_BUFFER_SIZE);
-    emrtd_secure_wipe(worker->lookahead, EMRTD_WORKER_DG2_LOOKAHEAD);
-    emrtd_secure_wipe(worker->digest_value, sizeof(worker->digest_value));
-
-    emrtd_demo_free(demo);
-    /* The port belongs to the chip that has just been freed. */
-    worker->transceiver = emrtd_iso14443_4_transceiver(worker->transport);
-
-    if(worker->export_ctx != NULL) {
-        emrtd_export_free(worker->export_ctx);
-        worker->export_ctx = NULL;
-    }
-
-    /* Both ends of PACE ran on this stack; the figure above is a measurement,
-     * so it is measured. */
-    FURI_LOG_I(
-        TAG,
-        "Demo read finished, %zu bytes of stack unused",
-        (size_t)furi_thread_get_stack_space(furi_thread_get_current_id()));
-
-    emrtd_worker_report(
-        worker,
-        worker->result->error == EmrtdErrorNone ? EmrtdWorkerStageDone : EmrtdWorkerStageError,
-        worker->result->error_file,
-        0,
-        0,
-        100,
-        NULL);
-
-    return 0;
-}
-
-#endif /* EMRTD_DEMO */
-
 /* --- The public interface ------------------------------------------------ */
 
 EmrtdWorker* emrtd_worker_alloc(EmrtdReadResult* result) {
@@ -2059,31 +1927,6 @@ void emrtd_worker_start(EmrtdWorker* worker, struct Nfc* nfc) {
     worker->running = true;
     furi_thread_start(worker->thread);
 }
-
-#ifdef EMRTD_DEMO
-void emrtd_worker_start_demo(EmrtdWorker* worker) {
-    furi_check(worker);
-    furi_check(!worker->running);
-
-    emrtd_secure_wipe(worker->result, sizeof(EmrtdReadResult));
-    worker->files_total = 0;
-    worker->files_done = 0;
-    worker->activation_failures = 0;
-    worker->driver_name = NULL;
-    worker->sm_active = false;
-    emrtd_sm_clear(&worker->sm);
-
-    /* There is no radio to take, so there is no Nfc instance either. */
-    worker->nfc = NULL;
-    worker->stop_requested = false;
-    furi_event_flag_clear(worker->events, EMRTD_WORKER_FLAG_FINISHED);
-
-    worker->thread = furi_thread_alloc_ex(
-        "EmrtdWorkerDemo", EMRTD_WORKER_DEMO_STACK_SIZE, emrtd_worker_demo_thread, worker);
-    worker->running = true;
-    furi_thread_start(worker->thread);
-}
-#endif
 
 void emrtd_worker_stop(EmrtdWorker* worker) {
     furi_check(worker);

@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Filip Sedivy
 
-import os
-
-# The demo build.
-#
-# EMRTD_DEMO=1 ufbt builds a second, separate package whose reads run against a
-# simulated chip instead of the radio, so that the screens can be photographed
-# without a document in hand. It is a build variant and never a feature: the
-# released package below compiles neither sim/ nor demo/, and the two carry
-# different application identifiers, so neither can overwrite the other.
-#
-# See docs/install.md.
-_demo = os.environ.get("EMRTD_DEMO") == "1"
-
 App(
-    appid="emrtd_demo" if _demo else "emrtd",
-    name="eMRTD Reader (Demo)" if _demo else "eMRTD Reader",
+    appid="emrtd",
+    name="eMRTD Reader",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="emrtd_app",
     # The scenes and the parsers run on this stack; the access control
@@ -29,17 +16,13 @@ App(
     fap_author="Filip Sedivy",
     fap_weburl="https://github.com/filipsedivy/emrtd-flipperzero",
     fap_icon_assets="images",
-    # Pinned so that both variants include the same <emrtd_icons.h>; without it
-    # the bundle would be named after the application identifier and the demo
-    # build would look for a header that does not exist.
-    fap_icon_assets_symbol="emrtd",
     # AES, DES, SHA-1, SHA-256 and the elliptic curve arithmetic PACE needs.
     # Brainpool is not compiled into this build of mbed TLS; the curve groups
     # are populated by hand instead. See docs/platform.md.
     fap_libs=["mbedtls"],
-    cdefines=["EMRTD_DEMO"] if _demo else [],
-    # Sources are gathered recursively, so the host test suite and the copy of
-    # mbed TLS it builds against have to be excluded explicitly. The simulated
-    # chip and the code that drives it are compiled into the demo build only.
-    sources=["*.c*", "!tests"] if _demo else ["*.c*", "!tests", "!sim", "!demo"],
+    # Sources are gathered recursively, so the host test suite, the copy of
+    # mbed TLS it builds against and the simulated chip it drives have to be
+    # excluded explicitly. Nothing in the package talks to anything but the
+    # radio.
+    sources=["*.c*", "!tests", "!sim"],
 )

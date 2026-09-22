@@ -166,19 +166,6 @@ void emrtd_worker_set_callback(EmrtdWorker* worker, EmrtdWorkerCallback callback
 /** Start polling. The worker owns the Nfc instance it is given for the run. */
 void emrtd_worker_start(EmrtdWorker* worker, struct Nfc* nfc);
 
-#ifdef EMRTD_DEMO
-/**
- * Start the demo build's read, against a simulated chip and no radio.
- *
- * Same sequence, same reports, same result record; only the transceiver
- * differs. Declared here rather than in a header of its own because it is one
- * of the two ways this worker can be started, and a caller choosing between
- * them should see both in one place. Compiled only for the demo build - see
- * demo/emrtd_demo.h for why that build exists.
- */
-void emrtd_worker_start_demo(EmrtdWorker* worker);
-#endif
-
 /** Ask the read to stop. Safe from the GUI thread. */
 void emrtd_worker_stop(EmrtdWorker* worker);
 

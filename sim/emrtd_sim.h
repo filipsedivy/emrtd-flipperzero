@@ -8,13 +8,11 @@
  * and the point of this object is to sit behind that port so that a whole read
  * can run with no radio underneath it.
  *
- * Two callers are allowed and no others. The host test suite drives it so that
- * a read can be checked on a workstation with sanitizers attached, and the
- * demo build - EMRTD_DEMO=1, demo/emrtd_demo.h - drives it so that the screens
- * can be photographed without a document in hand. The released package does
- * not compile this file at all; see application.fam. Nothing in the reader may
- * reference it either way: a layer that knows whether the chip is real would
- * stop being the thing the tests exercise.
+ * One caller is allowed and no others: the host test suite, which drives it so
+ * that a read can be checked on a workstation with sanitizers attached. The
+ * released package does not compile this file at all; see application.fam.
+ * Nothing in the reader may reference it either: a layer that knows whether
+ * the chip is real would stop being the thing the tests exercise.
  *
  * The chip side of every protocol is written out here rather than borrowed
  * from the reader. That is deliberate: if both ends shared an implementation,

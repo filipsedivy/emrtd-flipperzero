@@ -375,14 +375,6 @@ EmrtdError emrtd_export_write_mrz(EmrtdExport* export_ctx, const EmrtdMrz* mrz) 
     char expiry[16];
     emrtd_mrz_format_date(mrz->date_of_expiry, true, expiry, sizeof(expiry));
 
-#ifdef EMRTD_DEMO
-    /* Same reason as the banner on the report: this file lands in the same
-     * shared directory, the Saved browser lists it, and a data page with no
-     * marker on it reads as a record of somebody. */
-    emrtd_export_line(
-        export_ctx, file, "DEMO BUILD. Simulated chip, ICAO specimen, not a person.");
-    emrtd_export_blank(export_ctx, file);
-#endif
     emrtd_export_line(export_ctx, file, "Name:            %s", name);
     emrtd_export_line(export_ctx, file, "Document type:   %s", mrz->document_type);
     emrtd_export_line(export_ctx, file, "Document number: %s", mrz->document_number);
@@ -570,19 +562,6 @@ EmrtdError emrtd_export_write_report(
     emrtd_export_line(export_ctx, file, "ELECTRONIC TRAVEL DOCUMENT READ REPORT");
     emrtd_export_line(export_ctx, file, "============================================");
     emrtd_export_blank(export_ctx, file);
-#ifdef EMRTD_DEMO
-    /*
-     * First, before anything that looks like a finding. This file is written
-     * to the same directory a real read writes to, and a report that did not
-     * say this could be taken for a record of a document that was never
-     * there.
-     */
-    emrtd_export_line(
-        export_ctx, file, "DEMO BUILD. No document was read: the chip was simulated,");
-    emrtd_export_line(
-        export_ctx, file, "and the holder below is the ICAO specimen, who is not a person.");
-    emrtd_export_blank(export_ctx, file);
-#endif
     emrtd_export_line(
         export_ctx, file, "Reader:           eMRTD " EMRTD_VERSION " (Flipper Zero)");
     emrtd_export_line(

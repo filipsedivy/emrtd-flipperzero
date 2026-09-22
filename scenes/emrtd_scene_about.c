@@ -16,18 +16,6 @@ void emrtd_scene_about_on_enter(void* context) {
     furi_string_reset(body);
 
     furi_string_cat_printf(body, "\e#eMRTD Reader %s\n", EMRTD_VERSION);
-#ifdef EMRTD_DEMO
-    /*
-     * The only screen in the demo build that differs from the released one,
-     * deliberately: the pictures taken from this build are of the real
-     * application, and they would stop being that if every screen carried a
-     * banner. This is where somebody holding the package can find out.
-     */
-    furi_string_cat_str(
-        body,
-        "\n\e#DEMO BUILD\nReads a simulated chip, not\na document. The holder is\n"
-        "the ICAO specimen, who is\nnot a person. Built for\nscreenshots; not released.\n");
-#endif
     furi_string_cat_str(
         body,
         "\n\e#Use it on your own\ndocument, or with the\nholder's consent.\n"

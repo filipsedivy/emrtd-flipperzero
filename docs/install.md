@@ -53,32 +53,6 @@ ufbt launch                        # build, upload and start on a connected Flip
 `ufbt` alone builds `dist/emrtd.fap`, which can be copied to `/ext/apps/NFC/`
 on the SD card instead.
 
-### The demo build
-
-```bash
-EMRTD_DEMO=1 ufbt launch
-```
-
-builds `dist/emrtd_demo.fap`, a separate package whose reads run against a
-simulated chip instead of the radio. It exists for one job: photographing the
-screens for the catalogue entry without holding a document up to the antenna,
-and without a real document number ending up in a public listing. The document
-it reads is the ICAO specimen - Anna Maria Eriksson of Utopia, who is not a
-person - and the About screen says `DEMO BUILD`, which is the only screen that
-differs from the released package.
-
-Everything else is the real application: PACE, Secure Messaging, the parsers,
-the hash check against EF.SOD, the export. It keeps its own settings file and
-its own application identifier, so it cannot overwrite the released package or
-read the credentials that one remembers. `ufbt` without the variable never
-builds any of it - the simulator and the demo code are excluded from the
-released package's sources - which is why the two can live in one tree.
-
-The pace of the read is set by `EMRTD_DEMO_APDU_DELAY_MS` in
-[demo/emrtd_demo.h](../demo/emrtd_demo.h); raise it if a stage goes by too
-fast to catch. Screenshots for the catalogue have to come from qFlipper's own
-screenshot feature, at its resolution and in its format.
-
 ### Keeping more than one SDK
 
 `ufbt update` replaces whichever SDK was deployed before. To keep several, point
