@@ -12,6 +12,9 @@ typedef enum {
     EmrtdSceneResultIndexSecurity,
     EmrtdSceneResultIndexFiles,
     EmrtdSceneResultIndexPhoto,
+    /* Last, so that adding it does not move the scene state the other rows
+     * were stored under. The submenu decides its own order. */
+    EmrtdSceneResultIndexKeys,
 } EmrtdSceneResultIndex;
 
 static void emrtd_scene_result_submenu_callback(void* context, uint32_t index) {
@@ -49,6 +52,14 @@ void emrtd_scene_result_on_enter(void* context) {
         EmrtdSceneResultIndexSecurity,
         emrtd_scene_result_submenu_callback,
         app);
+
+    /* Only when a session was actually opened; without one there is nothing to
+     * show and a row that explains its own emptiness is worse than no row. */
+    if(app->result.keys.present) {
+        submenu_add_item(
+            submenu, "Keys", EmrtdSceneResultIndexKeys, emrtd_scene_result_submenu_callback, app);
+    }
+
     submenu_add_item(
         submenu, "Files", EmrtdSceneResultIndexFiles, emrtd_scene_result_submenu_callback, app);
 
@@ -70,7 +81,7 @@ bool emrtd_scene_result_on_event(void* context, SceneManagerEvent event) {
     Emrtd* app = context;
     bool consumed = false;
 
-    if(event.type == SceneManagerEventTypeCustom && event.event <= EmrtdSceneResultIndexPhoto) {
+    if(event.type == SceneManagerEventTypeCustom && event.event <= EmrtdSceneResultIndexKeys) {
         scene_manager_set_scene_state(app->scene_manager, EmrtdSceneResult, event.event);
         consumed = true;
 
@@ -89,6 +100,9 @@ bool emrtd_scene_result_on_event(void* context, SceneManagerEvent event) {
             break;
         case EmrtdSceneResultIndexPhoto:
             scene_manager_next_scene(app->scene_manager, EmrtdSceneResultPhoto);
+            break;
+        case EmrtdSceneResultIndexKeys:
+            scene_manager_next_scene(app->scene_manager, EmrtdSceneResultKeys);
             break;
         default:
             consumed = false;

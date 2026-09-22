@@ -181,8 +181,12 @@ genuine.
 
 ## Key material in memory
 
-Session keys live in an `EmrtdSm` on the worker's stack frame, are wiped by
-`emrtd_sm_clear()` when the session ends, and are never written to the export
-or the trace. The credentials are wiped the same way when a read finishes -
-unless the user asked for them to be remembered, in which case they are on
-the SD card and [security.md](security.md) applies.
+Session keys live in an `EmrtdSm`, a member of the heap allocated worker, and
+are wiped by `emrtd_sm_clear()` when the session ends. A copy of `KSenc`,
+`KSmac` and the counter the session opened with is taken at that opening and
+kept in the read result, so that `Result -> Keys` can show the holder the keys
+their own document produced; it lives until the application closes or the next
+read starts. Neither copy is ever written to the export or the trace. The
+credentials live for the life of the application too, and are on the SD card
+unless **Remember on SD** has been turned off; [security.md](security.md)
+applies to both.

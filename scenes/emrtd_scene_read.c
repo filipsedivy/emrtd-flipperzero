@@ -106,8 +106,10 @@ void emrtd_scene_read_on_enter(void* context) {
     Emrtd* app = context;
 
     /* Nothing of a previous read may show through: the view keeps its model
-     * between visits, and a stale stage line on a retry would be a lie. */
-    memset(&app->result, 0, sizeof(app->result));
+     * between visits, and a stale stage line on a retry would be a lie. The
+     * result is cleared with the secure primitive because it carries the
+     * previous session's keys; the progress never holds a secret. */
+    emrtd_secure_wipe_object(&app->result);
     memset(&app->progress, 0, sizeof(app->progress));
     app->progress.stage = EmrtdWorkerStageWaitingForCard;
 
@@ -248,16 +250,11 @@ void emrtd_scene_read_on_exit(void* context) {
     }
 
     /*
-     * A read that worked has no further use for the key to the document, so
-     * it goes - after the worker, whose own copy is cleared when it is freed
-     * above. Only on success: a failed read leaves them in place because the
-     * error screen shows what was used and its Retry runs again with them,
-     * and a mistyped date is the commonest failure there is.
-     *
-     * Remembering them on the card is a deliberate choice by the user, and it
-     * outranks this one; see docs/security.md.
+     * The credentials are not cleared here. The worker's own copy goes when it
+     * is freed above, and the one on the app outlives the read on purpose: a
+     * failed read needs it for what the error screen shows and for Retry, and
+     * a read that worked needs it for the next document of the same person.
+     * It is wiped when the application closes (emrtd_free) and by Document -
+     * Forget stored data, which clears the card as well. See docs/security.md.
      */
-    if(app->result.error == EmrtdErrorNone && !app->remember_credentials && app->wipe_after_read) {
-        emrtd_secure_wipe(&app->config.credentials, sizeof(app->config.credentials));
-    }
 }

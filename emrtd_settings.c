@@ -32,8 +32,9 @@
  * place would leave them on the card with nothing able to clear them.
  *
  * 1 -> 2: added EMRTD_KEY_WIPE, and the credential defaults became opt-in.
+ * 2 -> 3: removed EMRTD_KEY_WIPE; the credentials are kept on SD by default.
  */
-#define EMRTD_SETTINGS_VERSION (2)
+#define EMRTD_SETTINGS_VERSION (3)
 
 #define EMRTD_KEY_DOC_NUMBER "Document Number"
 #define EMRTD_KEY_BIRTH      "Date of Birth"
@@ -44,7 +45,6 @@
 #define EMRTD_KEY_FILES      "Data Groups"
 #define EMRTD_KEY_EXPORT     "Export To SD"
 #define EMRTD_KEY_TRACE      "Write Trace"
-#define EMRTD_KEY_WIPE       "Wipe After Read"
 /* Informational only: never compared, so a patch release changes nothing. */
 #define EMRTD_KEY_READER     "Reader Version"
 
@@ -172,7 +172,6 @@ bool emrtd_settings_load(Emrtd* app) {
         emrtd_settings_read_bool(file, EMRTD_KEY_REMEMBER, &app->remember_credentials);
         emrtd_settings_read_bool(file, EMRTD_KEY_EXPORT, &app->config.export_to_sd);
         emrtd_settings_read_bool(file, EMRTD_KEY_TRACE, &app->config.write_trace);
-        emrtd_settings_read_bool(file, EMRTD_KEY_WIPE, &app->wipe_after_read);
 
         uint32_t number = 0;
         if(emrtd_settings_read_uint32(file, EMRTD_KEY_METHOD, &number) &&
@@ -248,16 +247,26 @@ bool emrtd_settings_save(Emrtd* app) {
             break;
         }
 
+        /*
+         * Only values that exist are written. Forget clears the credentials in
+         * memory and then saves, to put the options back; without this an
+         * empty document number would be written straight back into the file
+         * Forget had just emptied, and the user would be looking at a settings
+         * file that still names the keys it was told had gone.
+         */
         if(app->remember_credentials) {
-            if(!flipper_format_write_string_cstr(
+            if(credentials->document_number[0] != '\0' &&
+               !flipper_format_write_string_cstr(
                    file, EMRTD_KEY_DOC_NUMBER, credentials->document_number)) {
                 break;
             }
-            if(!flipper_format_write_string_cstr(
+            if(credentials->date_of_birth[0] != '\0' &&
+               !flipper_format_write_string_cstr(
                    file, EMRTD_KEY_BIRTH, credentials->date_of_birth)) {
                 break;
             }
-            if(!flipper_format_write_string_cstr(
+            if(credentials->date_of_expiry[0] != '\0' &&
+               !flipper_format_write_string_cstr(
                    file, EMRTD_KEY_EXPIRY, credentials->date_of_expiry)) {
                 break;
             }
@@ -286,9 +295,6 @@ bool emrtd_settings_save(Emrtd* app) {
             break;
         }
         if(!flipper_format_write_bool(file, EMRTD_KEY_TRACE, &app->config.write_trace, 1)) {
-            break;
-        }
-        if(!flipper_format_write_bool(file, EMRTD_KEY_WIPE, &app->wipe_after_read, 1)) {
             break;
         }
         if(!flipper_format_write_string_cstr(file, EMRTD_KEY_READER, EMRTD_VERSION)) {

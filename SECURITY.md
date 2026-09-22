@@ -32,8 +32,10 @@ heap. The interesting failures are therefore:
 - **the cryptography** - a mistake in Secure Messaging, in the key
   derivation, in the PACE exchange, or in a check that should have been made
   before a value was used;
-- **credential handling** - key material that is not wiped, or credentials
-  that reach the export, the trace or the screen when they should not;
+- **credential handling** - key material that is not wiped, or credentials or
+  key material that reach the export, the trace, or a screen other than the
+  one the reader says shows them. `Result -> Keys` shows the session keys on
+  purpose, to the person holding the document; anywhere else is a finding;
 - **anything that writes outside the export directory**, or that turns a
   document number into a path.
 

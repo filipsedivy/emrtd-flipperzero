@@ -1447,6 +1447,26 @@ static EmrtdError emrtd_worker_try_driver(
 
     worker->sm = session;
     worker->sm_active = true;
+
+    /*
+     * Taken here and nowhere later. PACE re-selects the application inside the
+     * session a few lines down, and that command moves the counter on; the SSC
+     * the result is to show is the one the session started from. Only the
+     * bytes the cipher actually uses are copied, so a 3DES session does not
+     * appear to have thirty-two byte keys.
+     *
+     * Written straight into the result rather than staged in a local, because
+     * this frame sits above the elliptic curve arithmetic on the NFC thread's
+     * stack and eighty-odd bytes there are worth more than the symmetry with
+     * the outcome above. `present` stays false until the session is proven, so
+     * nothing reads them in the meantime.
+     */
+    EmrtdSessionKeys* keys = &worker->result->keys;
+    keys->cipher = session.cipher;
+    memcpy(keys->ks_enc, session.ks_enc, emrtd_cipher_key_size(session.cipher));
+    memcpy(keys->ks_mac, session.ks_mac, emrtd_cipher_key_size(session.cipher));
+    memcpy(keys->ssc, session.ssc, emrtd_cipher_block_size(session.cipher));
+
     emrtd_secure_wipe(&session, sizeof(session));
 
     if(driver->reselect_application) {
@@ -1463,6 +1483,7 @@ static EmrtdError emrtd_worker_try_driver(
             FURI_LOG_E(TAG, "Re-select after %s failed (%04X)", driver->name, sw);
             worker->sm_active = false;
             emrtd_sm_clear(&worker->sm);
+            emrtd_secure_wipe_object(keys);
             return failure;
         }
     }
@@ -1473,6 +1494,7 @@ static EmrtdError emrtd_worker_try_driver(
      * put on the screen the moment the event reaches it.
      */
     worker->result->access = outcome;
+    worker->result->keys.present = true;
     worker->result->authenticated = true;
     worker->driver_name = driver->name;
     return EmrtdErrorNone;

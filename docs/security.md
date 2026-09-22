@@ -9,8 +9,9 @@ the repository does about it, and what is left to you.
 
 | Material | Where it is | Why |
 | --- | --- | --- |
-| Document number, date of birth, date of expiry | typed on the device, kept in `emrtd.settings` if you ask | These three **are** the key. `Kseed = SHA-1(MRZ information)`, and PACE derives its password from the same string: anyone holding them can open that chip. |
+| Document number, date of birth, date of expiry | typed on the device, kept in `emrtd.settings` unless you say otherwise | These three **are** the key. `Kseed = SHA-1(MRZ information)`, and PACE derives its password from the same string: anyone holding them can open that chip. |
 | Card access number | the same | The PACE password in its own right. |
+| `KSenc`, `KSmac`, the initial SSC | in memory for as long as the app is open, shown by **Result -> Keys** | The Secure Messaging session itself. With a trace of the same read they would decrypt it; that is why they are never written anywhere. |
 | `EF_DG*.bin`, `EF_SOD.bin` | the export directory | The exact bytes of the chip, the facial image among them. |
 | `face.jpg` / `face.jp2` | the export directory | Biometric data in the ordinary legal sense of the term. |
 | `mrz.txt`, `report.txt` | the export directory | The same identity in a form anything can read. |
@@ -19,8 +20,8 @@ the repository does about it, and what is left to you.
 ## Where it lives on the device
 
 Everything is under `/ext/apps_data/emrtd/` on the SD card - the exports in a
-directory per read, and the credentials in `emrtd.settings` when **remember
-credentials** is on.
+directory per read, and the credentials in `emrtd.settings` unless **Remember
+on SD** has been turned off.
 
 That settings file is plain. It is not encrypted, and it cannot usefully be:
 the device has no secure element, no user secret to derive a key from, and
@@ -28,12 +29,22 @@ anything the application could unlock unattended, a reader of the card can
 unlock too. A Flipper is a small object that gets left on desks and lost in
 bags, and the SD card can be taken out and read on any computer.
 
-So the choice is deliberate and it is yours. **Remember on SD** is off by
-default, so unless you turn it on nothing of the key is written to the card:
+So the reader is plain about it rather than clever. **Remember on SD** is on by
+default, because the card is the only place the values survive the app being
+closed and a reader that asks for a document number, a date of birth and a date
+of expiry before every read is a reader nobody uses. What that costs you is
+stated here, and there are two ways out, both deliberate and both one screen
+away:
 
-- leave it off and type the values for each read, or
-- turn it on for convenience, and use **Document -> Forget stored data** when
-  you are finished. That deletes the settings file.
+- **Options -> Remember on SD**, turned off, stops anything of the key being
+  written from then on - you type the values for each read instead;
+- **Document -> Forget stored data** removes what is already there. That
+  deletes the settings file and clears the copy in memory.
+
+The credentials also stay in memory for as long as the app is open, whichever
+way that switch is set. A read that succeeded does not clear them - the next
+document of the same person needs them, and a read that *failed* needs them for
+what the error screen shows and for **Retry**. Closing the app wipes them.
 
 A settings file written by a build with a different file format is discarded
 *and removed* rather than left in place, because it may hold credentials under
@@ -93,11 +104,20 @@ can be committed.
 
 ## In memory
 
-Session keys live in an `EmrtdSm` for the length of a session and are wiped by
-`emrtd_sm_clear()` when it ends. The credentials are wiped the same way when a
-read succeeds, unless they are being remembered on purpose or **Wipe after
-read** has been turned off; a read that failed keeps them, so that the error
-screen can show what was used and Retry can use it again.
+The working session keys live in an `EmrtdSm`, a member of the worker, and are
+wiped by `emrtd_sm_clear()` the moment the session ends - on failure, on the
+next driver attempt, and when the read finishes.
+
+A **copy** of `KSenc`, `KSmac` and the counter the session started from is
+taken the instant the session opens, before the first protected command moves
+the counter on, and kept in the read result so that **Result -> Keys** can show
+them. That copy is the one exception to the sentence above: it lives as long as
+the application does. It is wiped when the app closes, and again at the start of
+the next read. It is never written to the card.
+
+The credentials live just as long, whether or not they are being remembered on
+the card. A read that succeeded does not clear them and a read that failed must
+not: the error screen shows what was used and Retry runs again with it.
 
 Wiping is `emrtd_secure_wipe()`, which is `mbedtls_platform_zeroize()` and not
 `memset()`. The difference is not pedantry: a `memset()` over a buffer that is
@@ -106,7 +126,20 @@ compiler deletes it. On this device a thread stack is a heap block, and the
 allocator does not zero what it hands out, so a wipe that the optimiser removed
 would leave the session keys in the next application's memory.
 
-The keys never reach the export or the trace. The **password** is a different
+What a screen leaves behind is the honest limit here. **Result -> Keys**
+overwrites its own text before releasing it, but the widget it hands the string
+to keeps a copy that the toolkit frees without clearing, and the same is true of
+every screen that shows the holder's name or the machine readable zone. Freed
+heap is not handed to another application without the allocator reusing it
+first, and nothing in this application reads it back - but it is not a wipe, and
+calling it one would be untrue.
+
+The keys never reach the export or the trace, and that is a rule the code is
+built to rather than a description of it: `EmrtdReadResult` is the struct
+`emrtd_export_write_report()` reads, so the field holding them carries a
+warning saying what must not be added next to it. A trace on the card beside
+the keys that decrypt it would turn an export into the session in the clear.
+The **password** is a different
 matter, and the sentence that used to stand here was wrong about it: the MRZ
 password *is* the document number and the two dates, and all three are written
 into `mrz.txt` and `report.txt` in the clear, because they are part of the

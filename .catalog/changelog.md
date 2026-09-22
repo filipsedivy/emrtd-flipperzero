@@ -20,4 +20,9 @@
 - The trace records each exchange twice under a session - as the radio carried
   it, and with the Secure Messaging taken off - and names the file, the offset,
   the length and the status word behind every one, in a documented format
-- Credentials can be remembered between reads, and forgotten on request
+- The Secure Messaging keys a read derived - the cipher, KSenc, KSmac and the
+  counter the session opened with - shown on the result, because they come out
+  of what the holder typed and the holder's own document; never written to the
+  card
+- Credentials are kept on the card between reads by default, and forgotten on
+  request

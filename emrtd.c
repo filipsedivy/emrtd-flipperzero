@@ -149,17 +149,19 @@ static Emrtd* emrtd_alloc(void) {
      * app being closed. The APDU trace is off because it is a diagnostic tool
      * and it records the document's own responses in the clear.
      *
-     * The credentials are neither kept on the card nor left in memory unless
-     * the user asks: they are the key to someone's identity document, so the
-     * default is the one that forgets. Both are in Options, and both are
-     * stated in docs/usage.md.
+     * The credentials are kept on the card, because that is the only place
+     * they survive the application being closed and typing a document number
+     * and two dates before every read is the thing that makes a reader
+     * unusable. They are the key to someone's identity document, so the way
+     * out is deliberate and it is stated in two places: Remember on SD in
+     * Options turns the storing off, and Document - Forget stored data
+     * removes what is already there. See docs/security.md.
      */
     app->config.method = EmrtdAccessMethodAuto;
     app->config.files = emrtd_file_default_mask();
     app->config.export_to_sd = true;
     app->config.write_trace = false;
-    app->remember_credentials = false;
-    app->wipe_after_read = true;
+    app->remember_credentials = true;
 
     emrtd_settings_load(app);
 

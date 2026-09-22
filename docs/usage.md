@@ -102,15 +102,14 @@ settings file described below.
   [trace.md](trace.md) describes the file line by line; read
   [security.md](security.md) before sending one to anybody.
 - **Remember on SD** - keep the document number, the dates and the CAN between
-  runs, in the settings file. Default **off**: those three values are the key
-  to the document, so keeping them is a choice you make rather than one you
-  inherit. A change to the settings file format clears the file, so an upgrade
-  may ask you to type them once more.
-- **Wipe after read** - clear the credentials out of memory once a read has
-  succeeded. Default **on**. It does nothing while **Remember on SD** is on,
-  because the values are on the card by your own choice, and the row then
-  reads `Kept on SD`. A read that *failed* keeps them either way: the error
-  screen shows what was used and its **Retry** runs again with them.
+  runs, in the settings file. Default **on**: the card is the only place they
+  survive the app being closed, and typing three values before every read is
+  what makes a reader unusable. They are the key to the document, so the way
+  back is in two places and both are deliberate - turn this row off to stop
+  the writing, and **Document -> Forget stored data** to remove what is
+  already on the card. [security.md](security.md) says what that means.
+  A change to the settings file format clears the file, so an upgrade may ask
+  you to type them once more.
 
 ### Read
 
@@ -138,6 +137,12 @@ for a moment afterwards.
 - **Security** - how the chip was opened, which cipher and curve were used,
   which security protocols the chip announced, and the result of comparing
   every data group with the hash EF.SOD lists for it.
+- **Keys** - the Secure Messaging keys this read derived: the cipher, `KSenc`,
+  `KSmac`, and the send sequence counter the session started from. They come
+  out of what you typed and this chip's answer to it, so they are your data
+  and the reader shows them rather than using them silently. They are held
+  only while the app is open and they are written nowhere - not to the report,
+  not to the trace. The row appears only when a session was actually opened.
 - **Files** - one line per elementary file: whether it was announced, read,
   skipped or failed, its size, and whether its hash matched. The detail screen
   shows the first bytes of the file and, for the groups that are decoded,

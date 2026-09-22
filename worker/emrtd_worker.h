@@ -78,6 +78,28 @@ typedef struct {
     EmrtdError error;
 } EmrtdFileResult;
 
+/**
+ * The Secure Messaging keys a read derived, kept so that the result can show
+ * them.
+ *
+ * They are copied out of the EmrtdSm the moment the session opens, before the
+ * first protected command moves the counter on, so the SSC here is the one the
+ * session started from and the three values together describe the session as
+ * it began.
+ *
+ * @warning This lives in EmrtdReadResult, which emrtd_export_write_report()
+ *          also reads. Nothing here may be written to the card: an APDU trace
+ *          next to these keys is the whole session decrypted by whoever picks
+ *          the card up. See docs/security.md.
+ */
+typedef struct {
+    bool present;
+    EmrtdCipher cipher;
+    uint8_t ks_enc[EMRTD_KEY_MAX_SIZE];
+    uint8_t ks_mac[EMRTD_KEY_MAX_SIZE];
+    uint8_t ssc[EMRTD_BLOCK_MAX_SIZE]; /**< As the session opened. */
+} EmrtdSessionKeys;
+
 /** Everything a completed read produced. */
 typedef struct {
     bool application_selected;
@@ -86,6 +108,7 @@ typedef struct {
 
     bool authenticated;
     EmrtdAccessOutcome access;
+    EmrtdSessionKeys keys;
 
     bool has_com;
     EmrtdEfCom com;

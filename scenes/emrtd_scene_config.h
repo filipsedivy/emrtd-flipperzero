@@ -13,9 +13,9 @@
  *     Start ─┬─ Read ──── Read ─┬─ ReadSuccess ── Result ─┬─ Holder
  *            │                  │                         ├─ Document
  *            │                  └─ ReadError              ├─ Security
- *            ├─ Document ─┬─ DocNumberInput               ├─ FileList ── FileDetail
- *            │            ├─ DateInput (birth, expiry)    └─ Photo
- *            │            ├─ CanInput
+ *            ├─ Document ─┬─ DocNumberInput               ├─ Keys
+ *            │            ├─ DateInput (birth, expiry)    ├─ FileList ── FileDetail
+ *            │            ├─ CanInput                     └─ Photo
  *            │            └─ ForgetConfirm ── ForgetDone
  *            ├─ Options ── DataGroups
  *            ├─ Saved ──── SavedDetail
@@ -37,6 +37,7 @@ ADD_SCENE(emrtd, result, Result)
 ADD_SCENE(emrtd, result_holder, ResultHolder)
 ADD_SCENE(emrtd, result_document, ResultDocument)
 ADD_SCENE(emrtd, result_security, ResultSecurity)
+ADD_SCENE(emrtd, result_keys, ResultKeys)
 ADD_SCENE(emrtd, result_file_list, ResultFileList)
 ADD_SCENE(emrtd, result_file_detail, ResultFileDetail)
 ADD_SCENE(emrtd, result_photo, ResultPhoto)
