@@ -55,12 +55,24 @@ the read got:
 - that exchange does not contain the credentials, but it is derived from
   them, and the encrypted nonce and the authentication tokens are material an
   attacker with the document in hand could test a guess against;
-- once Secure Messaging is running the payloads are ciphertext, and the data
-  groups do not appear in the clear.
+- **once Secure Messaging is running, the trace carries both forms**: the
+  ciphertext as it crossed the radio, on the `>` and `<` lines, and the same
+  exchange with the envelope taken off it, on the `>>` and `<<` lines. The
+  second is the readable one, and it is the whole reason the file is worth
+  sending: a trace that is ciphertext from the session onwards says nothing
+  about the read that went wrong. It also means the data groups are in there in
+  the clear - the machine readable zone, the additional details, and every
+  byte of the facial image as it streamed past.
+
+No key, no nonce and none of the three credentials is ever written to a trace;
+what is written is what the chip sent. That makes a trace no more sensitive
+than the `EF_DG*.bin` files beside it, and no less: the two come out of the
+same read and **Export to SD** is the one switch over both.
 
 A trace of a failure before authentication is nearly always safe to share. A
 trace of a successful read is a record of a session with your own document;
-treat it as you would the export.
+treat it as you would the export. [trace.md](trace.md) describes what each line
+of one means.
 
 ## What the repository does
 

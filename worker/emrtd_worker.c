@@ -264,6 +264,35 @@ static uint8_t emrtd_worker_file_percent(const EmrtdWorker* worker, size_t done,
 
 /* --- The diagnostic trace ----------------------------------------------- */
 
+/*
+ * What a trace is for: a document that reads on one reader and not on another
+ * differs somewhere in this exchange, and the difference is never in the data
+ * groups themselves - it is in which command the chip refuses, how much of a
+ * file it will part with at a time, or which of the two READ BINARY forms it
+ * implements. All of that is here, and docs/trace.md says how to read it and
+ * how to turn one into a test the simulated chip can be held to.
+ *
+ * Every line the reader writes goes through this section, so the rule that
+ * nothing secret reaches the file can be checked in one place: the notes
+ * carry file names, offsets, lengths and status words, and never a key, a
+ * nonce or a credential.
+ */
+
+/** True while there is an open export with tracing switched on. */
+static bool emrtd_worker_tracing(const EmrtdWorker* worker) {
+    return worker->export_ctx != NULL && worker->config.write_trace;
+}
+
+/**
+ * The wire, as the radio saw it.
+ *
+ * Once a session exists this is the envelope and not the command: the body is
+ * a cryptogram and the last two bytes are the tail of the MAC in DO'8E', not
+ * a status word. Reading them as one would put a plausible, invented status
+ * word in the trace for every protected exchange, which is worse than none -
+ * so the status word is left to the layer that has the real one, and that
+ * layer also writes the '>>' and '<<' lines the cryptogram hides.
+ */
 static void emrtd_worker_trace(void* context, bool outgoing, const uint8_t* data, size_t len) {
     EmrtdWorker* worker = context;
     if(worker->export_ctx == NULL) {
@@ -272,16 +301,47 @@ static void emrtd_worker_trace(void* context, bool outgoing, const uint8_t* data
 
     emrtd_export_trace(worker->export_ctx, outgoing ? "> " : "< ", data, len);
 
-    /*
-     * A response always ends with its status word, and that is the one part of
-     * the exchange a person reading the trace can act on, so it is spelled out
-     * rather than left as two hex digits.
-     */
-    if(!outgoing && len >= 2) {
+    if(!outgoing && !worker->sm_active && len >= 2) {
         const uint16_t sw = (uint16_t)((data[len - 2] << 8) | data[len - 1]);
-        char note[64];
-        snprintf(note, sizeof(note), "  SW %04X %s", sw, emrtd_sw_text(sw));
-        emrtd_export_trace_note(worker->export_ctx, note);
+        emrtd_export_trace_note(worker->export_ctx, "# sw code=%04X %s", sw, emrtd_sw_text(sw));
+    }
+}
+
+/*
+ * The outcome of a file in one word each, for the note that closes it.
+ *
+ * The report says the same thing in prose; a trace is read by tools as well
+ * as by people, so here the value is a single token and stays one.
+ */
+static const char* emrtd_worker_state_word(EmrtdFileState state) {
+    switch(state) {
+    case EmrtdFileStateAbsent:
+        return "absent";
+    case EmrtdFileStatePending:
+        return "pending";
+    case EmrtdFileStateReading:
+        return "reading";
+    case EmrtdFileStateRead:
+        return "read";
+    case EmrtdFileStateSkipped:
+        return "skipped";
+    default:
+        return "failed";
+    }
+}
+
+static const char* emrtd_worker_hash_word(EmrtdHashState state) {
+    switch(state) {
+    case EmrtdHashStateMatch:
+        return "match";
+    case EmrtdHashStateMismatch:
+        return "mismatch";
+    case EmrtdHashStateNotListed:
+        return "not-listed";
+    case EmrtdHashStateUnsupportedDigest:
+        return "unsupported-digest";
+    default:
+        return "unchecked";
     }
 }
 
@@ -372,6 +432,10 @@ static size_t emrtd_worker_chunk_size(const EmrtdWorker* worker) {
  * ICAO 9303-11 9.8: the Send Sequence Counter advances once for the command
  * and once for the response, so an exchange that is protected on the way out
  * must be unprotected on the way back or the two sides lose step.
+ *
+ * This is also the one place where both the command a caller meant and the
+ * envelope that carried it exist at once, which is why the readable half of
+ * the trace is written from here rather than from the transport.
  */
 static EmrtdError emrtd_worker_transmit(
     EmrtdWorker* worker,
@@ -381,6 +445,26 @@ static EmrtdError emrtd_worker_transmit(
     EmrtdError error;
 
     if(worker->sm_active) {
+        /*
+         * The plaintext is serialised into the send buffer and traced before
+         * the envelope overwrites it. That costs nothing and needs no second
+         * buffer on a thread that has little stack: emrtd_sm_protect() reads
+         * the command structure, and the data it points at is always a
+         * caller's own - never the buffer being written to.
+         *
+         * Only under a session, because without one the '>' line above is
+         * already the command in the clear and a second copy of it would say
+         * nothing.
+         */
+        if(emrtd_worker_tracing(worker)) {
+            size_t plain_len = 0;
+            if(emrtd_apdu_encode(
+                   command, worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE, &plain_len) ==
+               EmrtdErrorNone) {
+                emrtd_export_trace(worker->export_ctx, ">> ", worker->command, plain_len);
+            }
+        }
+
         error = emrtd_sm_protect(
             &worker->sm, command, worker->command, EMRTD_WORKER_APDU_BUFFER_SIZE, &tx_len);
     } else {
@@ -408,10 +492,8 @@ static EmrtdError emrtd_worker_transmit(
         char detail[96];
         emrtd_iso14443_4_failure_detail(worker->transport, error, detail, sizeof(detail));
         FURI_LOG_W(TAG, "Exchange failed: %s", detail);
-        if(worker->export_ctx != NULL && worker->config.write_trace) {
-            char note[112];
-            snprintf(note, sizeof(note), "  (no answer: %s)", detail);
-            emrtd_export_trace_note(worker->export_ctx, note);
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(worker->export_ctx, "# error stage=exchange %s", detail);
         }
         return error;
     }
@@ -438,33 +520,53 @@ static EmrtdError emrtd_worker_transmit(
     if(rx_len == 2) {
         const uint16_t bare_sw = (uint16_t)((worker->response[0] << 8) | worker->response[1]);
         FURI_LOG_W(TAG, "Session lost, chip answered %04X unprotected", bare_sw);
-        if(worker->export_ctx != NULL) {
-            char note[80];
-            snprintf(
-                note,
-                sizeof(note),
-                "  (unprotected %04X - secure messaging ended: %s)",
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# error stage=secure-messaging sw=%04X unprotected, the session has ended: %s",
                 bare_sw,
                 emrtd_sw_text(bare_sw));
-            emrtd_export_trace_note(worker->export_ctx, note);
         }
         worker->sm_active = false;
         emrtd_sm_clear(&worker->sm);
         return EmrtdErrorSecureMessaging;
     }
 
-    return emrtd_sm_unprotect(
+    error = emrtd_sm_unprotect(
         &worker->sm,
         worker->response,
         rx_len,
         worker->response,
         EMRTD_WORKER_APDU_BUFFER_SIZE,
         out);
+
+    if(emrtd_worker_tracing(worker)) {
+        if(error == EmrtdErrorNone) {
+            emrtd_export_trace_response(
+                worker->export_ctx, "<< ", out->data, out->data_len, out->sw);
+            emrtd_export_trace_note(
+                worker->export_ctx, "# sw code=%04X %s", out->sw, emrtd_sw_text(out->sw));
+        } else {
+            /*
+             * The envelope did not verify, so nothing inside it may be
+             * written down as though it had: what the trace records is that
+             * the check failed, and the '<' line above it is the evidence.
+             */
+            emrtd_export_trace_note(
+                worker->export_ctx, "# error stage=secure-messaging %s", emrtd_error_text(error));
+        }
+    }
+
+    return error;
 }
 
 static EmrtdError emrtd_worker_select_application(EmrtdWorker* worker, uint16_t* out_sw) {
     EmrtdCommandApdu command;
     emrtd_apdu_select_application(&command, EMRTD_AID, sizeof(EMRTD_AID));
+
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(worker->export_ctx, "# select target=application");
+    }
 
     EmrtdResponseApdu response;
     const EmrtdError error = emrtd_worker_transmit(worker, &command, &response);
@@ -483,6 +585,16 @@ static EmrtdError
 
     EmrtdCommandApdu command;
     emrtd_apdu_select_file(&command, fid);
+
+    /*
+     * The file is named before its own SELECT rather than after it, so that
+     * everything below the line - the reads, their offsets and whatever the
+     * chip answered - belongs to the file above it and to no other.
+     */
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(
+            worker->export_ctx, "# select target=file name=%s fid=%04X", info->name, info->fid);
+    }
 
     EmrtdResponseApdu response;
     const EmrtdError error = emrtd_worker_transmit(worker, &command, &response);
@@ -534,6 +646,11 @@ static EmrtdError emrtd_worker_read_binary_long(
         .le = (int)length,
     };
 
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(
+            worker->export_ctx, "# read off=%zu le=%zu form=odd", offset, length);
+    }
+
     const EmrtdError error = emrtd_worker_transmit(worker, &command, out);
     if(error != EmrtdErrorNone) {
         return error;
@@ -545,6 +662,11 @@ static EmrtdError emrtd_worker_read_binary_long(
     EmrtdTlv node;
     if(!emrtd_tlv_parse_first(out->data, out->data_len, &node) || node.tag != 0x53) {
         FURI_LOG_W(TAG, "Odd INS response is not a '53' data object");
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# error stage=read the answer to the odd instruction is not a '53' object");
+        }
         return EmrtdErrorParse;
     }
 
@@ -571,6 +693,11 @@ static EmrtdError emrtd_worker_read_binary(
     EmrtdCommandApdu command;
     emrtd_apdu_read_binary(&command, (uint16_t)offset, length);
 
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(
+            worker->export_ctx, "# read off=%zu le=%zu form=short", offset, length);
+    }
+
     EmrtdError error = emrtd_worker_transmit(worker, &command, out);
     if(error != EmrtdErrorNone) {
         return error;
@@ -590,6 +717,14 @@ static EmrtdError emrtd_worker_read_binary(
             exact = safe;
         }
         FURI_LOG_D(TAG, "Card asked for Le %zu", exact);
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# retry off=%zu le=%zu asked=%u the chip named its own length",
+                offset,
+                exact,
+                (unsigned)(sw2 == 0 ? EMRTD_LE_MAX : sw2));
+        }
 
         emrtd_apdu_read_binary(&command, (uint16_t)offset, exact);
         error = emrtd_worker_transmit(worker, &command, out);
@@ -811,6 +946,13 @@ static EmrtdError emrtd_worker_stream_file(
              */
             if(offset > EMRTD_WORKER_SHORT_OFFSET_MAX) {
                 FURI_LOG_W(TAG, "%s: the chip refuses the long offset form", info->name);
+                if(emrtd_worker_tracing(worker)) {
+                    emrtd_export_trace_note(
+                        worker->export_ctx,
+                        "# error stage=read the chip refuses the odd instruction, so %s ends at %zu",
+                        info->name,
+                        offset);
+                }
                 error = EmrtdErrorUnsupported;
                 break;
             }
@@ -820,12 +962,19 @@ static EmrtdError emrtd_worker_stream_file(
              * is finished rather than that anything went wrong.
              */
             if(response.sw == 0x6B00 && offset > 0) {
+                if(emrtd_worker_tracing(worker)) {
+                    emrtd_export_trace_note(
+                        worker->export_ctx, "# eof reason=6B00 at=%zu", offset);
+                }
                 break;
             }
             error = emrtd_error_from_sw(response.sw);
             break;
         }
         if(response.data_len == 0) {
+            if(emrtd_worker_tracing(worker)) {
+                emrtd_export_trace_note(worker->export_ctx, "# eof reason=empty at=%zu", offset);
+            }
             break;
         }
 
@@ -839,10 +988,31 @@ static EmrtdError emrtd_worker_stream_file(
             total = emrtd_tlv_total_length(response.data, len);
             if(total == 0 || total > EMRTD_WORKER_FILE_SIZE_MAX) {
                 FURI_LOG_W(TAG, "%s: cannot size from its header", info->name);
+                if(emrtd_worker_tracing(worker)) {
+                    emrtd_export_trace_note(
+                        worker->export_ctx,
+                        "# error stage=size the header of %s does not give a length",
+                        info->name);
+                }
                 total = len;
             }
             sized = true;
             entry->size = total;
+
+            /*
+             * How long the file says it is, and how much of it the reader is
+             * willing to ask for at a time. The second number is the one that
+             * differs between chips, and a file that arrives short or in an
+             * unexpected number of rounds is read from these two.
+             */
+            if(emrtd_worker_tracing(worker)) {
+                emrtd_export_trace_note(
+                    worker->export_ctx,
+                    "# file name=%s size=%zu chunk=%zu",
+                    info->name,
+                    total,
+                    emrtd_worker_chunk_size(worker));
+            }
         }
         if(offset + len > total) {
             len = total - offset;
@@ -910,6 +1080,9 @@ static EmrtdError emrtd_worker_stream_file(
 
         /* 6282 says the card reached the end of the file before filling Le. */
         if(response.sw == 0x6282) {
+            if(emrtd_worker_tracing(worker)) {
+                emrtd_export_trace_note(worker->export_ctx, "# eof reason=6282 at=%zu", offset);
+            }
             break;
         }
     }
@@ -1036,6 +1209,13 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
         entry->state = entry->error == EmrtdErrorFileNotFound ? EmrtdFileStateAbsent :
                                                                 EmrtdFileStateFailed;
         FURI_LOG_W(TAG, "SELECT %s: %04X", info->name, sw);
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# done name=%s state=%s bytes=0 hash=unchecked",
+                info->name,
+                emrtd_worker_state_word(entry->state));
+        }
         /* A file that is not there is not a reason to stop reading the rest. */
         worker->files_done++;
         return EmrtdErrorNone;
@@ -1061,8 +1241,12 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
         parse_ptr = &parse;
     } else if(cap > 0) {
         FURI_LOG_W(TAG, "No room to decode %s", info->name);
-        if(worker->export_ctx != NULL) {
-            emrtd_export_trace_note(worker->export_ctx, "no room to decode this file");
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# error stage=decode no room for the %zu bytes %s needs; it is still exported",
+                cap,
+                info->name);
         }
     }
 
@@ -1093,6 +1277,21 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
         /* The data groups hold personal details; do not leave them on the heap. */
         emrtd_secure_wipe(parse.data, parse.capacity);
         free(parse.data);
+    }
+
+    /*
+     * One line per file, whatever became of it. This is the line a reader of
+     * the trace counts: as many of them as EF.COM announced, each with the
+     * length the file turned out to be and what its hash did.
+     */
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(
+            worker->export_ctx,
+            "# done name=%s state=%s bytes=%zu hash=%s",
+            info->name,
+            emrtd_worker_state_word(entry->state),
+            entry->size,
+            emrtd_worker_hash_word(entry->hash_state));
     }
 
     /* Counted whatever the outcome, so that the progress bar keeps moving. */
@@ -1176,6 +1375,15 @@ static size_t
 
     emrtd_worker_export_end(worker);
 
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(
+            worker->export_ctx,
+            "# done name=%s state=%s bytes=%zu hash=unchecked",
+            info->name,
+            offset > 0 ? "read" : "failed",
+            offset);
+    }
+
     if(offset == 0) {
         return 0;
     }
@@ -1214,7 +1422,27 @@ static EmrtdError emrtd_worker_try_driver(
     if(error != EmrtdErrorNone) {
         emrtd_sm_clear(&session);
         FURI_LOG_W(TAG, "%s failed: %s", driver->name, emrtd_error_text(error));
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# session protocol=%s result=failed %s",
+                driver->name,
+                emrtd_error_text(error));
+        }
         return error;
+    }
+
+    /*
+     * What opened the chip, never what opened it with: the summary names the
+     * protocol, the cipher and the curve, and the keys derived from the
+     * credentials stay where they are.
+     */
+    if(emrtd_worker_tracing(worker)) {
+        emrtd_export_trace_note(
+            worker->export_ctx,
+            "# session protocol=%s result=open %s",
+            driver->name,
+            outcome.summary);
     }
 
     worker->sm = session;
@@ -1376,10 +1604,24 @@ static void emrtd_worker_read_data_groups(EmrtdWorker* worker, EmrtdFileMask pre
              */
             entry->state = EmrtdFileStateSkipped;
             entry->error = EmrtdErrorUnsupported;
+            if(emrtd_worker_tracing(worker)) {
+                emrtd_export_trace_note(
+                    worker->export_ctx,
+                    "# skip name=%s reason=eac announced, and out of reach without a certificate",
+                    info->name);
+            }
             continue;
         }
         if(!(worker->config.files & EMRTD_FILE_BIT(i))) {
             entry->state = EmrtdFileStateSkipped;
+            /*
+             * A group the chip holds and the user switched off. Without this
+             * line a trace of a partial read looks like a chip that hid it.
+             */
+            if(emrtd_worker_tracing(worker)) {
+                emrtd_export_trace_note(
+                    worker->export_ctx, "# skip name=%s reason=deselected", info->name);
+            }
             continue;
         }
 
@@ -1447,8 +1689,10 @@ static void emrtd_worker_read(EmrtdWorker* worker) {
             emrtd_worker_read_card_access(worker, card_access, EMRTD_WORKER_CARD_ACCESS_MAX);
     } else {
         FURI_LOG_W(TAG, "No room for EF.CardAccess; access control will have to guess");
-        if(worker->export_ctx != NULL) {
-            emrtd_export_trace_note(worker->export_ctx, "no room for EF.CardAccess");
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(
+                worker->export_ctx,
+                "# error stage=card-access no room to read it, so the method is a guess");
         }
     }
 
@@ -1579,6 +1823,23 @@ static void emrtd_worker_export_result(EmrtdWorker* worker) {
     if(worker->result->has_mrz) {
         emrtd_export_write_mrz(worker->export_ctx, &worker->result->mrz);
     }
+
+    /*
+     * The trace ends where the read did, so that a file which stops in the
+     * middle is telling a reader something - the card went away - rather than
+     * leaving them to wonder whether the log itself was cut short.
+     */
+    if(emrtd_worker_tracing(worker)) {
+        const EmrtdError error = worker->result->error;
+        emrtd_export_trace_note(
+            worker->export_ctx,
+            "# end files=%u hashes=%u/%u %s",
+            (unsigned)worker->files_done,
+            (unsigned)worker->result->hashes_matched,
+            (unsigned)worker->result->hashes_checked,
+            error == EmrtdErrorNone ? "the read finished" : emrtd_error_text(error));
+    }
+
     emrtd_export_write_report(worker->export_ctx, worker->result, &worker->config);
 
     if(!emrtd_export_failed(worker->export_ctx)) {
@@ -1704,19 +1965,18 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
     worker->activation_failures = 0;
     worker->activation_error = EmrtdErrorNone;
     worker->transceiver = emrtd_iso14443_4_transceiver(worker->transport);
-    if(worker->export_ctx != NULL && worker->config.write_trace) {
+    if(emrtd_worker_tracing(worker)) {
         emrtd_iso14443_4_set_trace(worker->transport, emrtd_worker_trace, worker);
 
         /*
          * The card's own timing parameters head the trace, because they are
          * the first thing worth knowing about a read that failed on a
-         * document which never moved.
+         * document which never moved. This is the one note whose tail is
+         * prose rather than fields; see docs/trace.md.
          */
         char description[96];
         emrtd_iso14443_4_describe(worker->transport, description, sizeof(description));
-        char note[112];
-        snprintf(note, sizeof(note), "  (%s)", description);
-        emrtd_export_trace_note(worker->export_ctx, note);
+        emrtd_export_trace_note(worker->export_ctx, "# card %s", description);
     }
 
     emrtd_worker_read(worker);

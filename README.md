@@ -151,6 +151,7 @@ document and what the export contains.
 | [usage.md](docs/usage.md) | Every screen, what to type, where the export lands |
 | [capabilities.md](docs/capabilities.md) | What it reads, what it refuses, and why |
 | [troubleshooting.md](docs/troubleshooting.md) | What each error means and what to try |
+| [trace.md](docs/trace.md) | The APDU trace: its format, how to read one, how to turn one into a change |
 | [security.md](docs/security.md) | What is sensitive, and what the repository does about it |
 | [architecture.md](docs/architecture.md) | The layers, and why the access drivers are a registry |
 | [protocol.md](docs/protocol.md) | The APDU sequence, and the frame size that shapes it |

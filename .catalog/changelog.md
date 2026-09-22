@@ -17,4 +17,7 @@
   group never has to fit in memory
 - Export directory per read: the raw files, the decoded zone, the image, a
   report, and an optional APDU trace
+- The trace records each exchange twice under a session - as the radio carried
+  it, and with the Secure Messaging taken off - and names the file, the offset,
+  the length and the status word behind every one, in a documented format
 - Credentials can be remembered between reads, and forgotten on request

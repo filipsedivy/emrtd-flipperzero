@@ -37,6 +37,16 @@
 #define EMRTD_EXPORT_LINE_SIZE   192
 /** Bytes hex encoded per storage_file_write() while tracing. */
 #define EMRTD_EXPORT_TRACE_SLICE 32
+/** One '#' line of the trace. The card description is the longest of them. */
+#define EMRTD_EXPORT_NOTE_SIZE   160
+
+/**
+ * The grammar version written into the head of every trace.
+ *
+ * Anything that reads a trace reads this first, so it moves whenever a line
+ * changes shape - a new note is not a change of shape, a new kind of line is.
+ */
+#define EMRTD_TRACE_FORMAT 2u
 
 struct EmrtdExport {
     Storage* storage;
@@ -189,8 +199,29 @@ EmrtdExport* emrtd_export_alloc(const char* document_number, bool write_trace) {
             storage_file_free(export_ctx->trace);
             export_ctx->trace = NULL;
         } else {
-            emrtd_export_puts(export_ctx->trace, "# eMRTD " EMRTD_VERSION " APDU trace\n");
-            emrtd_export_puts(export_ctx->trace, "# '>' command, '<' response\n");
+            /*
+             * The first two lines are what a tool reads before anything
+             * else: the version says which reader produced the file, and the
+             * format number says which grammar the rest of it follows. A
+             * change to any line below is a change to that number, and
+             * docs/trace.md is where both are written down.
+             */
+            emrtd_export_trace_note(
+                export_ctx, "# trace format=%u reader=%s", EMRTD_TRACE_FORMAT, EMRTD_VERSION);
+            emrtd_export_trace_note(export_ctx, "# legend > command, < response, on the wire");
+            emrtd_export_trace_note(
+                export_ctx, "# legend >> command, << response, inside Secure Messaging");
+            emrtd_export_trace_note(export_ctx, "# legend # a note: an event and its fields");
+            /*
+             * This file is written to be attached to a bug report, and the
+             * answers of a chip that opened are the data page in the clear.
+             * The warning is in the file rather than only in the handbook,
+             * because a file gets attached by somebody who has not read one.
+             */
+            emrtd_export_trace_note(
+                export_ctx,
+                "# notice this file carries the document's own data in the clear;"
+                " read docs/security.md before sending it anywhere");
         }
     }
 
@@ -699,6 +730,34 @@ EmrtdError emrtd_export_write_report(
 
 /* --- The diagnostic trace ----------------------------------------------- */
 
+/**
+ * Hex encode @p len bytes onto the open trace.
+ *
+ * Encoded in slices so that a forty kilobyte data group does not need a
+ * matching buffer; this runs on the NFC thread, whose stack is small.
+ */
+static bool emrtd_export_trace_hex(EmrtdExport* export_ctx, const uint8_t* data, size_t len) {
+    char slice[2 * EMRTD_EXPORT_TRACE_SLICE];
+    size_t done = 0;
+
+    while(done < len && data != NULL) {
+        size_t n = len - done;
+        if(n > EMRTD_EXPORT_TRACE_SLICE) {
+            n = EMRTD_EXPORT_TRACE_SLICE;
+        }
+        for(size_t i = 0; i < n; i++) {
+            slice[2 * i] = emrtd_export_hex[data[done + i] >> 4];
+            slice[2 * i + 1] = emrtd_export_hex[data[done + i] & 0x0F];
+        }
+        if(!emrtd_export_put(export_ctx->trace, slice, 2 * n)) {
+            return false;
+        }
+        done += n;
+    }
+
+    return true;
+}
+
 void emrtd_export_trace(
     EmrtdExport* export_ctx,
     const char* label,
@@ -713,37 +772,70 @@ void emrtd_export_trace(
     if(!emrtd_export_puts(export_ctx->trace, label)) {
         return;
     }
-
-    /*
-     * Encoded in slices so that a forty kilobyte data group does not need a
-     * matching buffer; this runs on the NFC thread, whose stack is small.
-     */
-    char slice[2 * EMRTD_EXPORT_TRACE_SLICE];
-    size_t done = 0;
-    while(done < len && data != NULL) {
-        size_t n = len - done;
-        if(n > EMRTD_EXPORT_TRACE_SLICE) {
-            n = EMRTD_EXPORT_TRACE_SLICE;
-        }
-        for(size_t i = 0; i < n; i++) {
-            slice[2 * i] = emrtd_export_hex[data[done + i] >> 4];
-            slice[2 * i + 1] = emrtd_export_hex[data[done + i] & 0x0F];
-        }
-        if(!emrtd_export_put(export_ctx->trace, slice, 2 * n)) {
-            return;
-        }
-        done += n;
+    if(!emrtd_export_trace_hex(export_ctx, data, len)) {
+        return;
     }
 
     emrtd_export_put(export_ctx->trace, "\n", 1);
 }
 
-void emrtd_export_trace_note(EmrtdExport* export_ctx, const char* text) {
+void emrtd_export_trace_response(
+    EmrtdExport* export_ctx,
+    const char* label,
+    const uint8_t* data,
+    size_t len,
+    uint16_t sw) {
     furi_check(export_ctx);
 
-    if(export_ctx->trace == NULL || text == NULL) {
+    if(export_ctx->trace == NULL || label == NULL) {
         return;
     }
-    emrtd_export_puts(export_ctx->trace, text);
+
+    const uint8_t status[2] = {(uint8_t)(sw >> 8), (uint8_t)(sw & 0xFF)};
+
+    if(!emrtd_export_puts(export_ctx->trace, label)) {
+        return;
+    }
+    if(!emrtd_export_trace_hex(export_ctx, data, len)) {
+        return;
+    }
+    if(!emrtd_export_trace_hex(export_ctx, status, sizeof(status))) {
+        return;
+    }
+
+    emrtd_export_put(export_ctx->trace, "\n", 1);
+}
+
+void emrtd_export_trace_note(EmrtdExport* export_ctx, const char* format, ...) {
+    furi_check(export_ctx);
+
+    if(export_ctx->trace == NULL || format == NULL) {
+        return;
+    }
+
+    /*
+     * A note is built here rather than at the call site so that the fifty odd
+     * places that write one do not each keep a buffer on the NFC thread's
+     * stack. A line longer than this is truncated rather than split: a note
+     * is a comment on the hex around it, and losing the tail of one costs
+     * nothing that the exchange itself does not already say.
+     */
+    char line[EMRTD_EXPORT_NOTE_SIZE];
+    va_list args;
+    va_start(args, format);
+    const int written = vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+
+    if(written <= 0) {
+        return;
+    }
+    size_t len = (size_t)written;
+    if(len >= sizeof(line)) {
+        len = sizeof(line) - 1;
+    }
+
+    if(!emrtd_export_put(export_ctx->trace, line, len)) {
+        return;
+    }
     emrtd_export_put(export_ctx->trace, "\n", 1);
 }

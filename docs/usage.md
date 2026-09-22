@@ -92,12 +92,15 @@ settings file described below.
 - **Export to SD** - whether a read writes anything at all. Default **on**.
   It is the master switch: with it off the result stays on screen and nothing
   reaches storage, the trace included.
-- **APDU trace** - write `trace.txt` next to the export: the exchange, as it
-  was sent and received. Default **off**, because it is a diagnostic tool and
-  it records the document's own answers in the clear. It writes into the export
-  directory, so it needs **Export to SD** on; with exporting off the row reads
-  `Needs export` and no trace is written. Read [security.md](security.md)
-  before sending one to anybody.
+- **APDU trace** - write `trace.txt` next to the export: every command and
+  every answer, with the Secure Messaging taken off them so that the file is
+  readable rather than a wall of ciphertext, and a note against each saying
+  which file, which offset and which status word. Default **off**, because it
+  is a diagnostic tool and it records the document's own answers in the clear.
+  It writes into the export directory, so it needs **Export to SD** on; with
+  exporting off the row reads `Needs export` and no trace is written.
+  [trace.md](trace.md) describes the file line by line; read
+  [security.md](security.md) before sending one to anybody.
 - **Remember on SD** - keep the document number, the dates and the CAN between
   runs, in the settings file. Default **off**: those three values are the key
   to the document, so keeping them is a choice you make rather than one you

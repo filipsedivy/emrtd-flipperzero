@@ -13,7 +13,8 @@
  *
  *     /ext/apps_data/emrtd/L898902C_20260920_2114/
  *         report.txt       what was read, how it was opened, what verified
- *         trace.txt        the APDU log, when it was asked for
+ *         trace.txt        the APDU log, when it was asked for; docs/trace.md
+ *                          describes its format line by line
  *         EF_COM.bin       the raw files, exactly as the chip returned them
  *         EF_SOD.bin
  *         EF_DG1.bin
@@ -86,15 +87,47 @@ EmrtdError emrtd_export_write_report(
     const EmrtdReadResult* result,
     const EmrtdWorkerConfig* config);
 
-/** Append one exchange to trace.txt, when tracing was asked for. */
+/* --- The diagnostic trace ----------------------------------------------- */
+
+/*
+ * A trace is three kinds of line and nothing else, which is what lets a tool
+ * read one: hex bodies, hex bodies with a status word on the end, and notes.
+ * The grammar, and what each note means, is docs/trace.md; the writers below
+ * are where every line in the file comes from.
+ */
+
+/** Append one body of bytes under @p label, e.g. "> " or ">> ". */
 void emrtd_export_trace(
     EmrtdExport* export_ctx,
     const char* label,
     const uint8_t* data,
     size_t len);
 
-/** Append a line of free text to trace.txt. */
-void emrtd_export_trace_note(EmrtdExport* export_ctx, const char* text);
+/**
+ * Append a response body with @p sw appended to it.
+ *
+ * A response that came off the wire carries its status word in its last two
+ * bytes, and one that has been lifted out of Secure Messaging carries it in
+ * DO'99' instead. Writing it back on the end here is what makes the two look
+ * the same to whatever reads the trace: every '<' line ends in its status
+ * word, whichever layer produced it.
+ */
+void emrtd_export_trace_response(
+    EmrtdExport* export_ctx,
+    const char* label,
+    const uint8_t* data,
+    size_t len,
+    uint16_t sw);
+
+/**
+ * Append a note: a '#' line that says what the hex around it was for.
+ *
+ * The format string is always a literal here, and the values in it never
+ * contain the credentials, a key or a nonce - a trace is written to be sent
+ * to a stranger. See docs/security.md.
+ */
+void emrtd_export_trace_note(EmrtdExport* export_ctx, const char* format, ...)
+    __attribute__((format(printf, 2, 3)));
 
 #ifdef __cplusplus
 }

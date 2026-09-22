@@ -195,6 +195,13 @@ Turn on **APDU trace** in Options, reproduce the problem, and take `trace.txt` a
 /ext/apps_data/emrtd/<document>_<date>/trace.txt
 ```
 
+The trace carries every command and every answer with the Secure Messaging
+taken off them, and a note against each saying which file was being read, at
+which offset, and what the chip answered - which is what makes a report about
+one document actionable for somebody who does not have it.
+[trace.md](trace.md) describes the file line by line, and has the path from a
+trace to a change to the reader if you would rather make it yourself.
+
 **Read the trace before you send it.** A trace of a failure before
 authentication contains no document data; a trace of a read that got further
 is a record of a session with your own document. There is a section about
