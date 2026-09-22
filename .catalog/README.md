@@ -67,12 +67,13 @@ export.
 ## About the screenshots
 
 They are of a document that does not exist. Taking them from a real one would
-publish somebody's document number and photograph, so the pictures come from a
-build of this same application whose reads run against a simulated chip
-carrying the ICAO specimen - Anna Maria Eriksson of Utopia, who is not a
-person. Every screen is the application's own, drawn from a read that ran the
-same PACE, the same Secure Messaging and the same parsers as a read from a
-document; only the radio was absent. That build is not the one published here.
+publish somebody's document number and photograph, so the pictures were captured
+from a build variant of this same application whose reads ran against a
+simulated chip carrying the ICAO specimen - Anna Maria Eriksson of Utopia, who
+is not a person. Every screen is the application's own, drawn from a read that
+ran the same PACE, the same Secure Messaging and the same parsers as a read from
+a document; only the radio was absent. That variant is not part of the
+application any more, and it is not what this package ships.
 
 Source, documentation and issues:
 <https://github.com/filipsedivy/emrtd-flipperzero>

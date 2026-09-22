@@ -8,10 +8,10 @@
 </p>
 
 <p align="center">
-  <img src="../../actions/workflows/build.yml/badge.svg" alt="Build">
-  <img src="../../actions/workflows/test.yml/badge.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/firmware-release%20%7C%20API%2087.1-orange" alt="Firmware release channel, API 87.1">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+  <a href="https://github.com/filipsedivy/emrtd-flipperzero/actions/workflows/build.yml"><img src="https://github.com/filipsedivy/emrtd-flipperzero/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/filipsedivy/emrtd-flipperzero/actions/workflows/test.yml"><img src="https://github.com/filipsedivy/emrtd-flipperzero/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="docs/install.md"><img src="https://img.shields.io/badge/firmware-official%20%7C%20Unleashed%20%7C%20Momentum-orange" alt="Firmware: official, Unleashed, Momentum"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
 </p>
 
 ---
@@ -19,43 +19,31 @@
 eMRTD reads the contactless chip in an electronic identity document - a
 passport, a national identity card or a residence permit, all built to **ICAO
 Doc 9303** - on a **Flipper Zero**, and writes every data group it can reach to
-the SD card. No computer, no serial cable, no companion application.
+the SD card. No computer, no serial cable, no companion application. It is not
+told which document it is facing: it opens whatever `EF.CardAccess` announces,
+and the only differences that reach you are the key you type and the layout of
+the zone decoded afterwards.
 
-## Which documents
+<p align="center">
+  <img src=".catalog/screenshots/screen1-menu.png" alt="Main menu" width="256">
+  <img src=".catalog/screenshots/screen3-reading.png" alt="Reading a document" width="256">
+  <img src=".catalog/screenshots/screen5-result-holder.png" alt="Holder" width="256">
+</p>
 
-An eMRTD is not a kind of booklet, it is a data structure: any contactless chip
-that carries the ICAO LDS1 application, `A0 00 00 02 47 10 01`, is one. That
-covers
+<p align="center">
+  <em>A read of the ICAO specimen - <code>L898902C</code>, ANNA MARIA ERIKSSON
+  of Utopia, who is not a person - captured from a build variant that ran
+  against a simulated chip, and that the package does not ship.</em>
+</p>
 
-- **passports**, whose machine readable zone is TD3, two lines of 44;
-- **national identity cards**, which in the European Union have carried the
-  same biometric chip since 2021 because Regulation (EU) 2019/1157 requires it,
-  with a TD1 zone of three lines of 30;
-- **residence permits** and the other ID-1 and ID-2 documents built to the same
-  part of the standard.
-
-The reader is not told which one it is facing. It selects the application,
-reads what `EF.CardAccess` announces and opens whatever answers, so the
-difference between a passport and an identity card comes down to two things:
-the key you type, and the layout of the zone that is decoded afterwards.
-
-An identity card may carry a second, **contact** chip as well - in the Czech
-card that is where the eIDAS certificates and the signature keys live. It
-speaks over the gold pads, and a Flipper is 13.56 MHz only, so nothing here can
-reach it.
-
-## Why it exists
+## Why PACE
 
 The readers that came before this one implement **BAC**, the access protocol of
 2006. BAC is being withdrawn, and a document issued in the European Union after
 2017 may implement **PACE** only - against such a chip a BAC reader gets as far
-as the first command and stops.
-
-eMRTD implements both, reads `EF.CardAccess` to find out what the chip wants,
-and runs PACE first because that is what a modern document announces. The
-identity card in the table below is that case in the flesh: its
-`EF.CardAccess` announces one protocol, PACE over NIST P-256, and the European
-specification behind the card does not provide for BAC at all.
+as the first command and stops. An identity card issued in the Union since 2021
+is exactly that case. eMRTD implements both and runs PACE first, because that is
+what a modern document announces.
 
 ## What it does
 
@@ -70,13 +58,14 @@ specification behind the card does not provide for BAC at all.
 - **Exports** the raw files, the decoded MRZ, the facial image and a report to
   a directory per document.
 
-The signature on EF.SOD, the EAC-protected groups DG3 and DG4, and writing to
-a chip are all out of reach, for reasons that are measured rather than guessed.
-[docs/capabilities.md](docs/capabilities.md) has the full matrix.
+The signature on EF.SOD, the EAC-protected groups DG3 and DG4, and writing to a
+chip are all out of reach, for reasons that are measured rather than guessed;
+[docs/capabilities.md](docs/capabilities.md) has the full matrix, and which
+documents count as an eMRTD in the first place.
 
 **A read that shows every hash matching says the chip is internally consistent,
-nothing more.** The signature over EF.SOD is not checked, so this reader cannot
-tell a genuine document from a well made copy of one.
+nothing more** - the signature is not checked, so this reader cannot tell a
+genuine document from a well made copy of one.
 
 ## Tested documents
 
@@ -85,29 +74,12 @@ tell a genuine document from a well made copy of one.
 | Czech passport | the three MRZ values | BAC, 3DES - `EF.CardAccess` could not be read | DG1, DG2, DG14, DG15; DG3 announced and skipped | all four match |
 | Czech identity card, 2021 series | **the CAN** | PACE-ECDH-GM, AES-128, NIST P-256 - `EF.CardAccess` read | DG1 as TD1, DG2, DG14, DG15; DG3 announced and skipped | all four match |
 
-**The identity card is opened with its card access number.** The CAN is the six
-digit figure printed on the card; it goes in under Document -> CAN, and with it
-stored the reader uses it in place of the machine readable zone. A passport
-prints no CAN, so there the three MRZ values - document number, date of birth,
-date of expiry - are the only way in. The card's own TD1 zone was not tried as a
-key, so nothing here says whether that would work too.
-
-The passport row is a BAC read. That document's DG14 declares PACE-ECDH-GM with
-AES-128 over NIST P-256, but DG14 is read only once a session is open, so the
-declaration arrives long after the moment it would have been useful. **PACE has
-now run against a real chip** - the identity card, generic mapping over NIST
-P-256 with AES-128 - rather than only against the ICAO test vectors and the host
-simulator.
-
-Both rows were read on the device. For the identity card the detail was
-cross-checked against a host reference implementation driven over the same
-Flipper as its radio: the protocols the chip announces, the four hashes, the
-`6982` that DG3 answers a reader without a terminal certificate, and the EF.SOD
-signature that this reader cannot check and that one could.
-
-Rows come from pull requests - [CONTRIBUTING.md](CONTRIBUTING.md) says what may
-be written down about a document, and the pull request template already asks
-for it.
+Both rows were read on the device, so **PACE has now run against a real chip**
+rather than only against the ICAO test vectors and the host simulator;
+[docs/capabilities.md](docs/capabilities.md) has what else each read established
+and what a host reference implementation confirmed. Rows come from pull
+requests, and [CONTRIBUTING.md](CONTRIBUTING.md) says what may be written down
+about a document.
 
 ## Install
 
@@ -132,20 +104,15 @@ Start -> Document (number, date of birth, date of expiry, or a CAN)
 ```
 
 The key is whatever the document prints on itself, which is why reading only
-works with it in hand: either the three values of the machine readable zone, or
-the six digit card access number where the document carries one. A passport has
-only the first; an identity card usually prints both, and the CAN is the
-shorter thing to type. Each read lands in its own directory under
-`/ext/apps_data/emrtd/`, and that directory is a complete identity -
-[docs/security.md](docs/security.md) says what it holds and what to do about
-it.
-
+works with it in hand. Each read lands in its own directory under
+`/ext/apps_data/emrtd/`, and that directory is a complete identity.
 [docs/usage.md](docs/usage.md) describes every screen, where to hold the
-document and what the export contains.
+document and what the export contains; [docs/security.md](docs/security.md)
+says what to do about what it leaves behind.
 
 ## Documentation
 
-| | |
+| Page | What is in it |
 | --- | --- |
 | [install.md](docs/install.md) | Firmware channels, ufbt, the app catalogue |
 | [usage.md](docs/usage.md) | Every screen, what to type, where the export lands |
@@ -158,6 +125,7 @@ document and what the export contains.
 | [cryptography.md](docs/cryptography.md) | BAC, PACE, Secure Messaging, and the vector that pins each step |
 | [platform.md](docs/platform.md) | What the firmware's mbed TLS can and cannot do, measured |
 | [branding.md](docs/branding.md) | Why the mark is six pads on a ten by ten grid |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability, privately |
 
 Building, testing and the house rules: [CONTRIBUTING.md](CONTRIBUTING.md).
 
