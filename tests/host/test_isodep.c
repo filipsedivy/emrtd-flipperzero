@@ -49,9 +49,11 @@ typedef struct {
     uint8_t wtxm;
     unsigned wtx_answered;
 
+    unsigned drop_skip; /**< Frames to let through before the dropping starts. */
     unsigned drop_next; /**< Frames to swallow before the card sees them. */
     unsigned lose_skip; /**< Answers to deliver before the losing starts. */
     unsigned lose_answers; /**< Answers the card sends that never arrive. */
+    bool lose_damaged; /**< A lost answer arrives with a bad CRC, not at all. */
 
     /* The protocol control byte of every frame the reader sent, in order. */
     uint8_t pcbs[32];
@@ -94,14 +96,18 @@ static EmrtdError chip_send(
     if(len > rx_cap || len > sizeof(chip->last_block)) {
         return EmrtdErrorBufferTooSmall;
     }
-    memcpy(chip->last_block, block, len);
-    chip->last_block_len = len;
+    /* Rule 11 sends the stored block itself, which must not be copied onto itself. */
+    if(block != chip->last_block) {
+        memcpy(chip->last_block, block, len);
+        chip->last_block_len = len;
+    }
 
     if(chip->lose_skip > 0) {
         chip->lose_skip--;
     } else if(chip->lose_answers > 0) {
         chip->lose_answers--;
-        return EmrtdErrorCardLost;
+        /* What the port makes of a bad CRC, as against a frame that never came. */
+        return chip->lose_damaged ? EmrtdErrorTransport : EmrtdErrorCardLost;
     }
     memcpy(rx, block, len);
     *rx_len = len;
@@ -150,7 +156,9 @@ static EmrtdError chip_frame(
         chip->pcbs[chip->pcb_count++] = tx[0];
     }
 
-    if(chip->drop_next > 0) {
+    if(chip->drop_skip > 0) {
+        chip->drop_skip--;
+    } else if(chip->drop_next > 0) {
         chip->drop_next--;
         return EmrtdErrorCardLost;
     }
@@ -213,7 +221,14 @@ static EmrtdError chip_frame(
             const uint8_t ack[1] = {(uint8_t)(0xA2 | chip->block_number)};
             return chip_send(chip, ack, sizeof(ack), rx, rx_cap, rx_len);
         }
-        /* Rules E and 13: the next block of a chained answer. */
+        /*
+         * Rules E and 13: the next block of a chained answer. Outside a chain
+         * this is a protocol error, and section 7.5.5 has the card attempt no
+         * recovery: it goes back to listening, and the reader hears nothing.
+         */
+        if(chip->response_sent == 0 || chip->response_sent >= chip->response_len) {
+            return EmrtdErrorCardLost;
+        }
         chip->block_number ^= 1;
         return chip_answer(chip, rx, rx_cap, rx_len);
     }
@@ -594,13 +609,36 @@ static void test_retransmission(void) {
     chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
     TEST_EQ_STR(sequence, "02B2");
 
+    /*
+     * Neither side checks the other's number on an I-block, so a slip only
+     * shows at the next recovery. The sequence is what says it did not slip.
+     */
     emrtd_test_begin("and the block numbers are still in step afterwards");
     chip.command_len = 0;
+    mark = chip.pcb_count;
     TEST_EQ_INT(
         emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
         EmrtdErrorNone);
     TEST_EQ_HEX(rx, rx_len, "9000");
     TEST_EQ_INT(chip.commands, 2);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "03");
+    TEST_EQ_INT(isodep.block_number, chip.block_number ^ 1);
+
+    emrtd_test_begin("an answer that arrived damaged is recovered the same way");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.lose_answers = 1;
+    chip.lose_damaged = true;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B2");
 
     /* Scenario 9: the R(NAK)'s own answer is lost too, and a second one is sent. */
     emrtd_test_begin("an answer lost twice over is still recovered, still without a replay");
@@ -648,6 +686,23 @@ static void test_retransmission(void) {
     chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
     TEST_EQ_STR(sequence, "03B303");
 
+    /* The block the card asked for again is itself answered, and that answer lost. */
+    emrtd_test_begin("a resent command whose answer is lost is not sent a third time");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.drop_next = 1;
+    chip.lose_skip = 1;
+    chip.lose_answers = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B202B2");
+
     /* Scenario 10: the card's request for more time is what went missing. */
     emrtd_test_begin("a lost request for more time is asked for again and granted");
     open_session(&chip, &isodep, ats, sizeof(ats));
@@ -665,6 +720,48 @@ static void test_retransmission(void) {
     TEST_EQ_INT(chip.wtx_answered, 1);
     chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
     TEST_EQ_STR(sequence, "02B2F2");
+
+    /* Scenario 11: the request is lost, and so is the first R(NAK) asking for it. */
+    emrtd_test_begin("a lost request for more time survives a lost R(NAK) as well");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.wtx_pending = 1;
+    chip.wtxm = 4;
+    chip.lose_answers = 1;
+    chip.drop_skip = 1;
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B2B2F2");
+
+    /*
+     * Scenario 12, the path PACE takes: the reader's grant of more time never
+     * reached the card, so the card is still waiting for it, and R(NAK) has it
+     * ask again.
+     */
+    emrtd_test_begin("a grant of more time that never arrived is asked for and given again");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.wtx_pending = 1;
+    chip.wtxm = 4;
+    chip.drop_skip = 1;
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    TEST_EQ_INT(chip.wtx_answered, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02F2B2F2");
 
     /* Scenario 13: the time was granted, and the answer after it was lost. */
     emrtd_test_begin("an answer lost after an extension is recovered without a replay");
@@ -684,6 +781,26 @@ static void test_retransmission(void) {
     chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
     TEST_EQ_STR(sequence, "02F2B2");
 
+    /* Scenario 14: as 13, with the first R(NAK) lost on the way as well. */
+    emrtd_test_begin("an answer lost after an extension survives a lost R(NAK) as well");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.wtx_pending = 1;
+    chip.wtxm = 4;
+    chip.lose_skip = 1;
+    chip.lose_answers = 1;
+    chip.drop_skip = 2;
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02F2B2B2");
+
     /*
      * Rule 5. While the card is chaining its answer the recovery is the same
      * R(ACK) again, and the card repeats the block it sent rather than moving
@@ -700,6 +817,26 @@ static void test_retransmission(void) {
     chip.response_chunk = 64;
     chip.lose_skip = 1;
     chip.lose_answers = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(rx_len, sizeof(long_response));
+    TEST_CHECK(memcmp(rx, long_response, sizeof(long_response)) == 0);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02A3A3A2A3");
+
+    /*
+     * Scenario 19: this time the reader's R(ACK) is what was lost. The same
+     * R(ACK) again is new to the card, which moves on to the next block.
+     */
+    emrtd_test_begin("a lost R(ACK) during a chained answer neither skips nor repeats a block");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = long_response;
+    chip.response_len = sizeof(long_response);
+    chip.response_chunk = 64;
+    chip.drop_skip = 1;
+    chip.drop_next = 1;
     mark = chip.pcb_count;
     TEST_EQ_INT(
         emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
@@ -732,6 +869,43 @@ static void test_retransmission(void) {
     TEST_CHECK(memcmp(chip.command, long_command, sizeof(long_command)) == 0);
     TEST_EQ_INT(chip.commands, 1);
     TEST_EQ_HEX(rx, rx_len, "9000");
+
+    /* Scenario 17: a piece of the command is what never arrived. */
+    emrtd_test_begin("a lost piece of a chained command is sent again, and only once");
+    open_session(&chip, &isodep, small_ats, sizeof(small_ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.drop_skip = 1;
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(
+            &isodep, long_command, sizeof(long_command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(chip.command_len, sizeof(long_command));
+    TEST_CHECK(memcmp(chip.command, long_command, sizeof(long_command)) == 0);
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "1213B31302");
+
+    /* Scenario 18: the acknowledgement is lost, and then the first R(NAK). */
+    emrtd_test_begin("a lost acknowledgement survives a lost R(NAK) as well");
+    open_session(&chip, &isodep, small_ats, sizeof(small_ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.lose_answers = 1;
+    chip.drop_skip = 1;
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(
+            &isodep, long_command, sizeof(long_command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(chip.command_len, sizeof(long_command));
+    TEST_CHECK(memcmp(chip.command, long_command, sizeof(long_command)) == 0);
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "12B2B21302");
 
     emrtd_test_begin("a chip that has really gone is reported after the rounds run out");
     open_session(&chip, &isodep, ats, sizeof(ats));

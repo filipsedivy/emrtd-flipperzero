@@ -1616,20 +1616,26 @@ static EmrtdError emrtd_worker_authenticate(
             }
 
             /*
-             * The first protocol to fail is the one the chip asked for, and
-             * what it said is the diagnosis; the fall back is a guess. So a
-             * later failure replaces it only when it is a verdict on the key
-             * and the first was not. Otherwise a wrong CAN, followed by a BAC
-             * attempt that the chip does not answer - an identity card has no
-             * BAC to answer with - reaches the screen as a document that moved
-             * away, and sends its holder to reposition a card that was never
-             * the problem.
+             * The first protocol to run is the one the chip asked for, and what
+             * it said is the diagnosis; a fall back is a guess, often with a
+             * different password, so nothing it says replaces that. Otherwise
+             * a wrong CAN, followed by a BAC attempt the chip does not answer -
+             * an identity card has no BAC to answer with - reaches the screen
+             * as a document that moved away, and a CAN that has just opened
+             * the chip can be blamed for the passport's MRZ that BAC tried
+             * after it.
+             *
+             * When the protocol the chip announced could not be run at all,
+             * the probe's reason is what is held - a curve out of reach, say -
+             * and the fall back replaces it only with a verdict on the key it
+             * used, which is the one thing it can add.
              */
-            if(!attempted ||
-               (!emrtd_worker_is_key_verdict(best_error) && emrtd_worker_is_key_verdict(error))) {
-                best_error = error;
+            if(!attempted) {
+                if(best_error == EmrtdErrorNoAccessMethod || emrtd_worker_is_key_verdict(error)) {
+                    best_error = error;
+                }
+                attempted = true;
             }
-            attempted = true;
 
             if(error == EmrtdErrorCardLost || error == EmrtdErrorTransport) {
                 /* The document has gone; trying another protocol cannot help. */

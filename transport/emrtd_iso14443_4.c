@@ -35,8 +35,10 @@ struct EmrtdIso14443_4 {
      * What the radio said about each frame of the APDU being exchanged. One
      * EmrtdError covers a timeout, a checksum failure and an internal fault,
      * and when a command goes unanswered three times it matters whether all
-     * three failed the same way. A recovery round can cost two frames - the
-     * R(NAK), and the block again if the card never had it - hence the size.
+     * three failed the same way. One block that fails outright records
+     * 1 + EMRTD_ISODEP_RETRIES of them, since a recovery round loses at most
+     * one frame; an APDU can span several blocks and extension rounds, so
+     * there is room to spare, and the count goes on past what is kept.
      */
     Iso14443_3aError last_error;
     uint8_t frame_errors[2 * EMRTD_ISODEP_RETRIES + 2];
@@ -46,6 +48,13 @@ struct EmrtdIso14443_4 {
     EmrtdIso14443_4TraceCallback trace;
     void* trace_context;
 };
+
+/** How many of the radio codes counted in frame_error_count were kept. */
+static uint8_t emrtd_iso14443_4_kept_errors(const EmrtdIso14443_4* instance) {
+    return instance->frame_error_count < sizeof(instance->frame_errors) ?
+               instance->frame_error_count :
+               (uint8_t)sizeof(instance->frame_errors);
+}
 
 static EmrtdError emrtd_iso14443_4_transceive(
     void* ctx,
@@ -293,7 +302,8 @@ void emrtd_iso14443_4_failure_detail(
         snprintf(out + pos, out_size - pos, " %d", instance->last_error);
         return;
     }
-    for(uint8_t i = 0; i < instance->frame_error_count && pos + 4 < out_size; i++) {
+    const uint8_t kept = emrtd_iso14443_4_kept_errors(instance);
+    for(uint8_t i = 0; i < kept && pos + 4 < out_size; i++) {
         pos += (size_t)snprintf(out + pos, out_size - pos, " %u", instance->frame_errors[i]);
     }
 }
@@ -310,7 +320,8 @@ bool emrtd_iso14443_4_recovery_detail(const EmrtdIso14443_4* instance, char* out
     /* Fields of the trace never contain a space, so the codes are joined by commas. */
     size_t pos =
         (size_t)snprintf(out, out_size, "lost=%u radio=", (unsigned)instance->frame_error_count);
-    for(uint8_t i = 0; i < instance->frame_error_count && pos + 4 < out_size; i++) {
+    const uint8_t kept = emrtd_iso14443_4_kept_errors(instance);
+    for(uint8_t i = 0; i < kept && pos + 4 < out_size; i++) {
         pos += (size_t)snprintf(
             out + pos, out_size - pos, "%s%u", i > 0 ? "," : "", instance->frame_errors[i]);
     }
@@ -399,7 +410,10 @@ static EmrtdError emrtd_iso14443_4_frame(
     instance->last_error = error;
     if(error != Iso14443_3aErrorNone) {
         if(instance->frame_error_count < sizeof(instance->frame_errors)) {
-            instance->frame_errors[instance->frame_error_count++] = (uint8_t)error;
+            instance->frame_errors[instance->frame_error_count] = (uint8_t)error;
+        }
+        if(instance->frame_error_count < UINT8_MAX) {
+            instance->frame_error_count++;
         }
         FURI_LOG_W(TAG, "Frame of %zu bytes went unanswered, radio error %d", tx_len, error);
         return emrtd_iso14443_4_map_error_3a(error);

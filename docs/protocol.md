@@ -14,11 +14,12 @@ On **type A** this reader runs the block transmission protocol itself, in
 `transport/emrtd_isodep.c`: RATS and the ATS, block numbering, chaining in
 both directions, the waiting time extension a chip asks for while it does
 elliptic curve arithmetic, and recovery of an answer that was lost on the way.
-That recovery is R(NAK), as ISO/IEC 14443-4 prescribes, and never the lost
-block sent again: rule D has the card execute every I-block it receives,
-whatever its block number, so a second copy of a command is a second command,
-and under Secure Messaging that ends the session. The firmware has all of that
-too, and it cannot be used, because it
+That recovery is R(NAK), or the same R(ACK) again while the card is chaining
+its answer, as ISO/IEC 14443-4 prescribes. The lost block is sent again only
+when the card has answered that it never had it: rule D has the card execute
+every I-block it receives, whatever its block number, so a second copy sent
+unasked is a second command, and under Secure Messaging that ends the session.
+The firmware has all of that too, and it cannot be used, because it
 gives every block a frame waiting time of 120 microseconds whenever the card's
 ATS carries no TB1, allows the answer to RATS only 2.95 milliseconds, and
 exposes no way for an application to change either. Items 10 to 12 of
