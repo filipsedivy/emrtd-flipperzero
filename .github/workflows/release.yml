@@ -85,6 +85,10 @@ jobs:
           ls -l "$out"
           echo "dir=$out" >> "$GITHUB_OUTPUT"
 
+      # All three jobs publish to the same release, and each one replaces its
+      # text with its own body - the last job to finish writes what the page
+      # says. So the body speaks for all three packages, never for the one
+      # this job built.
       - name: Publish the release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -92,14 +96,13 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
-            Packages for the official firmware, Unleashed and Momentum.
-            This one is `${{ matrix.firmware }}`, API
-            ${{ steps.build.outputs.api-version }}.
+            Packages for the official firmware, Unleashed and Momentum. Each
+            file name says which firmware it is for and the API version it was
+            built against.
 
-            A package carries the API version it was built against and the
-            launcher refuses one that does not match, which is what
-            "App Too Old" means - take the file whose name matches your
-            firmware. Copy it to /ext/apps/NFC/ on the SD card, or install it
-            with `ufbt launch`.
+            The launcher refuses a package built against another API version,
+            which is what "App Too Old" means - take the file whose name
+            matches your firmware. Copy it to /ext/apps/NFC/ on the SD card,
+            or install it with `ufbt launch`.
 
             The changelog is in .catalog/changelog.md.

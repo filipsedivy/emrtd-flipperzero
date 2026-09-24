@@ -34,7 +34,7 @@ including the photograph takes several seconds.
 - The security object, and every data group's hash checked against it.
 - Every other non-EAC data group, exported as raw bytes.
 
-Each read becomes a directory under `/ext/apps_data/emrtd/` holding the raw
+Each read becomes a directory under _/ext/apps_data/emrtd/_ holding the raw
 files, the decoded machine readable zone, the image and a report. An APDU
 trace can be written next to them for diagnosis.
 
