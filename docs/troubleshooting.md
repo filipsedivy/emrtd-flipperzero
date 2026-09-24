@@ -121,8 +121,10 @@ carries the ATS and the waiting time that was armed.
 
 ## The read stops part way
 
-The stage and the file on the read screen say where it stopped, and the
-result screens still show everything that was read before. A failure on DG2
+The error screen says where it stopped, under the hint: the file it died
+on, or, when it stopped before any file, the stage - opening the document,
+reading `EF.CardAccess`, or authenticating. `report.txt` carries the same
+line. The result screens still show everything that was read before. A failure on DG2
 specifically is usually the document moving: it is the largest file and takes
 the longest.
 

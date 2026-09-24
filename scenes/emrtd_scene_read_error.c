@@ -80,12 +80,24 @@ void emrtd_scene_read_error_on_enter(void* context) {
 
     /* Which file it died on is the difference between a broken document and a
      * group this reader cannot open. */
+    bool placed = false;
     if(error != EmrtdErrorNone && app->result.error_file < EmrtdFileCount) {
         const EmrtdFileInfo* info = emrtd_file_info(app->result.error_file);
         if(info != NULL &&
            app->result.files[app->result.error_file].state == EmrtdFileStateFailed) {
             furi_string_cat_printf(body, "\n\nIt stopped on %s.", info->name);
+            placed = true;
         }
+    }
+    /*
+     * A read that stopped before any file has no file to name, and those are
+     * the stops worth telling apart: a chip that goes quiet while it computes
+     * PACE is a different problem from one that never opened a session. The
+     * read screen showed the stage, but it is gone by the time this is drawn.
+     */
+    const char* stopped = emrtd_worker_stopped_text(&app->result);
+    if(!placed && stopped != NULL) {
+        furi_string_cat_printf(body, "\n\n%s", stopped);
     }
 
     widget_add_string_element(

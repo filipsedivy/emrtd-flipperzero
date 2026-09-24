@@ -25,6 +25,7 @@
 
 #define EMRTD_PCB_R_ACK      0xA2
 #define EMRTD_PCB_R_NAK_FLAG 0x10
+#define EMRTD_PCB_R_NAK      (EMRTD_PCB_R_ACK | EMRTD_PCB_R_NAK_FLAG)
 #define EMRTD_PCB_R_MASK     0xE6
 
 #define EMRTD_PCB_S_WTX      0xF2
@@ -246,56 +247,95 @@ void emrtd_isodep_parse_ats(EmrtdIsoDep* instance, const uint8_t* ats, size_t le
 }
 
 /**
- * One frame out and one back, retried while the answer does not arrive.
- *
- * @param[in] attempts how many times the frame may be put on the wire in all
+ * One frame out and one back, exactly once.
  */
 static EmrtdError emrtd_isodep_send_raw(
     EmrtdIsoDep* instance,
     const uint8_t* frame,
     size_t len,
     uint32_t fwt_fc,
-    unsigned attempts,
     size_t* out_len) {
-    EmrtdError error = EmrtdErrorInternal;
+    size_t received = 0;
+    const EmrtdError error = instance->send(
+        instance->context,
+        frame,
+        len,
+        instance->rx_frame,
+        sizeof(instance->rx_frame),
+        &received,
+        fwt_fc);
 
-    for(unsigned attempt = 0; attempt < attempts; attempt++) {
-        size_t received = 0;
-        error = instance->send(
-            instance->context,
-            frame,
-            len,
-            instance->rx_frame,
-            sizeof(instance->rx_frame),
-            &received,
-            fwt_fc);
-
-        if(error == EmrtdErrorNone) {
-            *out_len = received;
-            return EmrtdErrorNone;
-        }
-        /*
-         * Only a lost answer is worth asking for again. A refused frame, a
-         * buffer that was too small or an argument this layer got wrong will
-         * fail exactly the same way every time.
-         */
-        if(error != EmrtdErrorCardLost && error != EmrtdErrorTransport) {
-            break;
-        }
-    }
-
-    *out_len = 0;
+    *out_len = error == EmrtdErrorNone ? received : 0;
     return error;
 }
 
-/** Send a block, service every waiting time extension, return the real answer. */
+/**
+ * Whether a failed frame is one ISO/IEC 14443-4 recovers from.
+ *
+ * A timeout, and an answer that arrived damaged, are what rules 4 and 5 are
+ * for; the Flipper's radio reports the second as a card that is not present,
+ * which is why both arrive here as either of these two. A refused frame, a
+ * buffer that was too small or an argument this layer got wrong will fail
+ * exactly the same way every time.
+ */
+static bool emrtd_isodep_is_recoverable(EmrtdError error) {
+    return error == EmrtdErrorCardLost || error == EmrtdErrorTransport;
+}
+
+/**
+ * Send one block and bring its answer back, recovering the answer if it is lost.
+ *
+ * @p recovery is the block the reader sends when nothing usable comes back:
+ * R(NAK) carrying the reader's own block number after an I-block or an
+ * S(WTX) response (rule 4), or the same R(ACK) again while the card is
+ * chaining its answer (rule 5). The block itself is sent a second time only
+ * when the card has said it never had it, which is an R(ACK) whose block
+ * number is not the reader's (rules 12 and 6); see EMRTD_ISODEP_RETRIES for
+ * why sending it again unasked would run the command twice.
+ */
+static EmrtdError emrtd_isodep_send_block(
+    EmrtdIsoDep* instance,
+    const uint8_t* frame,
+    size_t len,
+    uint8_t recovery,
+    uint32_t fwt_fc,
+    size_t* out_len) {
+    EmrtdError error = emrtd_isodep_send_raw(instance, frame, len, fwt_fc, out_len);
+    const bool i_block = emrtd_isodep_is_i_block(frame[0]);
+
+    for(unsigned round = 0; round < EMRTD_ISODEP_RETRIES && emrtd_isodep_is_recoverable(error);
+        round++) {
+        const uint8_t ask[1] = {recovery};
+        error = emrtd_isodep_send_raw(instance, ask, sizeof(ask), fwt_fc, out_len);
+        if(error != EmrtdErrorNone || !i_block || *out_len < 1) {
+            continue;
+        }
+
+        const uint8_t pcb = instance->rx_frame[0];
+        if(emrtd_isodep_is_r_block(pcb) && !emrtd_isodep_is_r_nak(pcb) &&
+           (pcb & EMRTD_PCB_BLOCK_NUMBER) != (instance->block_number & EMRTD_PCB_BLOCK_NUMBER)) {
+            /* The card never had the block, so sending it now runs it once. */
+            error = emrtd_isodep_send_raw(instance, frame, len, fwt_fc, out_len);
+        }
+    }
+
+    return error;
+}
+
+/**
+ * Send a block, service every waiting time extension, return the real answer.
+ *
+ * @param[in] recovery the block that asks for a lost answer again; see
+ *                     emrtd_isodep_send_block()
+ */
 static EmrtdError emrtd_isodep_exchange(
     EmrtdIsoDep* instance,
     const uint8_t* frame,
     size_t len,
+    uint8_t recovery,
     size_t* out_len) {
-    EmrtdError error = emrtd_isodep_send_raw(
-        instance, frame, len, instance->fwt_fc, EMRTD_ISODEP_RETRIES + 1, out_len);
+    EmrtdError error =
+        emrtd_isodep_send_block(instance, frame, len, recovery, instance->fwt_fc, out_len);
     if(error != EmrtdErrorNone) {
         return error;
     }
@@ -324,8 +364,8 @@ static EmrtdError emrtd_isodep_exchange(
             granted = EMRTD_ISODEP_FWT_MAX_FC;
         }
 
-        error = emrtd_isodep_send_raw(
-            instance, reply, sizeof(reply), (uint32_t)granted, EMRTD_ISODEP_RETRIES + 1, out_len);
+        error = emrtd_isodep_send_block(
+            instance, reply, sizeof(reply), recovery, (uint32_t)granted, out_len);
         if(error != EmrtdErrorNone) {
             return error;
         }
@@ -354,8 +394,8 @@ EmrtdError emrtd_isodep_activate(EmrtdIsoDep* instance) {
      * dropped, which is the caller's business, not this layer's.
      */
     size_t received = 0;
-    const EmrtdError error = emrtd_isodep_send_raw(
-        instance, rats, sizeof(rats), EMRTD_ISODEP_RATS_FWT_FC, 1, &received);
+    const EmrtdError error =
+        emrtd_isodep_send_raw(instance, rats, sizeof(rats), EMRTD_ISODEP_RATS_FWT_FC, &received);
     if(error != EmrtdErrorNone) {
         return error;
     }
@@ -412,7 +452,7 @@ static EmrtdError emrtd_isodep_receive(
         memcpy(rx + total, instance->rx_frame + header, inf);
         total += inf;
 
-        /* ISO/IEC 14443-4 rule C: the block was accepted, so the number moves. */
+        /* ISO/IEC 14443-4 rule B: the block was accepted, so the number moves. */
         instance->block_number ^= 1;
 
         if(!(pcb & EMRTD_PCB_I_CHAINING)) {
@@ -420,10 +460,17 @@ static EmrtdError emrtd_isodep_receive(
             return EmrtdErrorNone;
         }
 
+        /*
+         * The acknowledgement asks for the next block, and while the card is
+         * chaining it is also what asks for a lost one again (rule 5): a card
+         * that sent the block repeats it, one that never saw this R(ACK)
+         * carries on.
+         */
         const uint8_t ack[1] = {
             (uint8_t)(EMRTD_PCB_R_ACK | (instance->block_number & EMRTD_PCB_BLOCK_NUMBER)),
         };
-        const EmrtdError error = emrtd_isodep_exchange(instance, ack, sizeof(ack), &frame_len);
+        const EmrtdError error =
+            emrtd_isodep_exchange(instance, ack, sizeof(ack), ack[0], &frame_len);
         if(error != EmrtdErrorNone) {
             return error;
         }
@@ -468,8 +515,11 @@ EmrtdError emrtd_isodep_transceive(
         instance->tx_frame[0] = pcb;
         memcpy(instance->tx_frame + 1, tx + sent, chunk);
 
+        /* R(NAK) with this block's number is what asks for its answer again (rule 4). */
+        const uint8_t nak =
+            (uint8_t)(EMRTD_PCB_R_NAK | (instance->block_number & EMRTD_PCB_BLOCK_NUMBER));
         const EmrtdError error =
-            emrtd_isodep_exchange(instance, instance->tx_frame, chunk + 1, &frame_len);
+            emrtd_isodep_exchange(instance, instance->tx_frame, chunk + 1, nak, &frame_len);
         if(error != EmrtdErrorNone) {
             return error;
         }
@@ -506,8 +556,7 @@ void emrtd_isodep_deselect(EmrtdIsoDep* instance) {
 
     const uint8_t deselect[1] = {EMRTD_PCB_S_DESELECT};
     size_t received = 0;
-    (void)emrtd_isodep_send_raw(
-        instance, deselect, sizeof(deselect), instance->fwt_fc, 1, &received);
+    (void)emrtd_isodep_send_raw(instance, deselect, sizeof(deselect), instance->fwt_fc, &received);
     instance->activated = false;
 }
 

@@ -132,6 +132,19 @@ void emrtd_iso14443_4_failure_detail(
     char* out,
     size_t out_size);
 
+/**
+ * Say what the radio lost during an exchange that nevertheless succeeded.
+ *
+ * An answer that went missing and was asked for again leaves no mark on the
+ * APDU, so without this a document that reads only just - because it sits at
+ * the edge of the field, or draws more than the field gives while it computes
+ * - looks exactly like one that reads comfortably.
+ *
+ * @return false when every frame of the last exchange arrived first time, in
+ *         which case @p out is left empty
+ */
+bool emrtd_iso14443_4_recovery_detail(const EmrtdIso14443_4* instance, char* out, size_t out_size);
+
 /** Install the diagnostic hook. Pass NULL to remove it. */
 void emrtd_iso14443_4_set_trace(
     EmrtdIso14443_4* instance,

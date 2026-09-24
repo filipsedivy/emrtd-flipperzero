@@ -172,6 +172,8 @@ struct EmrtdWorker {
     uint8_t activation_failures;
     /** Why the last activation round failed, for the screen when they run out. */
     EmrtdError activation_error;
+    /** The last stage reported short of Done or Error, for a read that fails. */
+    EmrtdWorkerStage stage;
 };
 
 /* --- Stage names -------------------------------------------------------- */
@@ -203,6 +205,32 @@ const char* emrtd_worker_stage_text(EmrtdWorkerStage stage) {
     }
 }
 
+const char* emrtd_worker_stopped_text(const EmrtdReadResult* result) {
+    if(result == NULL || result->error == EmrtdErrorNone) {
+        return NULL;
+    }
+    switch(result->error_stage) {
+    case EmrtdWorkerStageWaitingForCard:
+        return "It stopped before the chip would open a session.";
+    case EmrtdWorkerStageSelectingApplication:
+        return "It stopped while opening the document, before anything was read.";
+    case EmrtdWorkerStageReadingCardAccess:
+        return "It stopped while reading EF.CardAccess, before authenticating.";
+    case EmrtdWorkerStageAuthenticating:
+        /*
+         * The stage is reported once more after a driver succeeds, so the
+         * flag is what says which side of the session the read stopped on.
+         */
+        return result->authenticated ?
+                   "It stopped just after the secure session opened." :
+                   "It stopped while authenticating, before any file was read.";
+    case EmrtdWorkerStageReadingFile:
+        return "It stopped while reading the files.";
+    default:
+        return NULL;
+    }
+}
+
 /* --- Progress ----------------------------------------------------------- */
 
 /**
@@ -223,6 +251,9 @@ static bool emrtd_worker_report(
     size_t bytes_total,
     uint8_t percent,
     const char* detail) {
+    if(stage < EmrtdWorkerStageDone) {
+        worker->stage = stage;
+    }
     if(worker->stop_requested) {
         return false;
     }
@@ -300,6 +331,20 @@ static void emrtd_worker_trace(void* context, bool outgoing, const uint8_t* data
     }
 
     emrtd_export_trace(worker->export_ctx, outgoing ? "> " : "< ", data, len);
+
+    /*
+     * The answer above arrived, but not necessarily first time. Written here
+     * rather than by the caller because the access protocols talk to the port
+     * directly, and the PACE steps are where an identity card draws the most
+     * from the field.
+     */
+    char recovery[48];
+    if(!outgoing &&
+       emrtd_iso14443_4_recovery_detail(worker->transport, recovery, sizeof(recovery))) {
+        FURI_LOG_W(TAG, "Answer recovered: %s", recovery);
+        emrtd_export_trace_note(
+            worker->export_ctx, "# recover %s the answer was asked for again", recovery);
+    }
 
     if(!outgoing && !worker->sm_active && len >= 2) {
         const uint16_t sw = (uint16_t)((data[len - 2] << 8) | data[len - 1]);
@@ -1500,6 +1545,11 @@ static EmrtdError emrtd_worker_try_driver(
     return EmrtdErrorNone;
 }
 
+/** The chip's own statement that the credentials do not open it. */
+static bool emrtd_worker_is_key_verdict(EmrtdError error) {
+    return error == EmrtdErrorWrongKey || error == EmrtdErrorPaceFailed;
+}
+
 /**
  * Open the chip.
  *
@@ -1530,6 +1580,7 @@ static EmrtdError emrtd_worker_authenticate(
     }
 
     EmrtdError best_error = EmrtdErrorNoAccessMethod;
+    bool attempted = false;
 
     /* Highest score first; the registry order decides between equal scores. */
     for(int level = (int)EmrtdAccessScoreAnnounced; level >= (int)EmrtdAccessScorePossible;
@@ -1560,11 +1611,29 @@ static EmrtdError emrtd_worker_authenticate(
                 return EmrtdErrorNone;
             }
 
-            best_error = error;
-            if(error == EmrtdErrorCardLost || error == EmrtdErrorTransport ||
-               error == EmrtdErrorCancelled) {
-                /* The document has gone; trying another protocol cannot help. */
+            if(error == EmrtdErrorCancelled) {
                 return error;
+            }
+
+            /*
+             * The first protocol to fail is the one the chip asked for, and
+             * what it said is the diagnosis; the fall back is a guess. So a
+             * later failure replaces it only when it is a verdict on the key
+             * and the first was not. Otherwise a wrong CAN, followed by a BAC
+             * attempt that the chip does not answer - an identity card has no
+             * BAC to answer with - reaches the screen as a document that moved
+             * away, and sends its holder to reposition a card that was never
+             * the problem.
+             */
+            if(!attempted ||
+               (!emrtd_worker_is_key_verdict(best_error) && emrtd_worker_is_key_verdict(error))) {
+                best_error = error;
+            }
+            attempted = true;
+
+            if(error == EmrtdErrorCardLost || error == EmrtdErrorTransport) {
+                /* The document has gone; trying another protocol cannot help. */
+                return best_error;
             }
 
             /*
@@ -1576,7 +1645,7 @@ static EmrtdError emrtd_worker_authenticate(
             emrtd_sm_clear(&worker->sm);
             uint16_t sw = 0;
             if(emrtd_worker_select_application(worker, &sw) != EmrtdErrorNone) {
-                return error;
+                return best_error;
             }
         }
     }
@@ -1876,8 +1945,18 @@ static void emrtd_worker_export_result(EmrtdWorker* worker) {
 
 /* --- The poller callback ------------------------------------------------ */
 
+/** Record how far a failed read got, once, before anything reports on it. */
+static void emrtd_worker_mark_stop(EmrtdWorker* worker) {
+    if(worker->result->error != EmrtdErrorNone &&
+       worker->result->error_stage == EmrtdWorkerStageIdle) {
+        worker->result->error_stage = worker->stage;
+    }
+}
+
 /** Everything the callback is allowed to do once the read is over. */
 static NfcCommand emrtd_worker_finish(EmrtdWorker* worker) {
+    emrtd_worker_mark_stop(worker);
+
     worker->sm_active = false;
     emrtd_sm_clear(&worker->sm);
     emrtd_iso14443_4_set_trace(worker->transport, NULL, NULL);
@@ -2002,6 +2081,8 @@ static NfcCommand emrtd_worker_poller_callback(NfcGenericEvent event, void* cont
     }
 
     emrtd_worker_read(worker);
+    /* Before the export, so that report.txt can say where the read stopped. */
+    emrtd_worker_mark_stop(worker);
     emrtd_worker_export_result(worker);
 
     if(worker->result->error != EmrtdErrorNone) {
@@ -2196,6 +2277,7 @@ void emrtd_worker_start(EmrtdWorker* worker, struct Nfc* nfc) {
     worker->files_total = 0;
     worker->files_done = 0;
     worker->activation_failures = 0;
+    worker->stage = EmrtdWorkerStageIdle;
     worker->driver_name = NULL;
     worker->sm_active = false;
     emrtd_sm_clear(&worker->sm);

@@ -32,7 +32,7 @@
  * What it owns, therefore, is everything above the bare frame: RATS and the
  * ATS, the block number and when it toggles, chaining in both directions,
  * the waiting time extension a chip asks for while it does elliptic curve
- * arithmetic, retransmission of a block whose answer was lost, and the
+ * arithmetic, recovery of an answer that was lost on the way, and the
  * deselect at the end. It is handed one function that puts a frame on the
  * wire and brings the answer back, which is what makes the whole layer
  * testable on a host against a simulated chip.
@@ -103,15 +103,22 @@ extern "C" {
 #define EMRTD_ISODEP_WTX_ROUNDS_MAX 60
 
 /**
- * Extra attempts at a block whose answer did not arrive.
+ * Rounds of recovery for a block whose answer did not arrive intact.
  *
- * ISO/IEC 14443-4 section 7.5.6 puts recovery on the reader, and the rule
- * that makes it safe is in 7.5.4.2: a card that receives a block whose block
- * number is not its own re-transmits its last answer instead of executing
- * anything again. So resending an identical I-block asks for the lost answer
- * back; it does not run the command twice, which matters because under
- * Secure Messaging a second execution would advance the chip's send sequence
- * counter and end the session.
+ * ISO/IEC 14443-4 section 7.5.5 puts recovery on the reader, and the block
+ * that does it is never the lost block itself. Rule D has the card toggle its
+ * block number on every I-block it receives, "independent of its block
+ * number", and execute it: an I-block sent twice is two commands. Under Secure
+ * Messaging the second one carries a send sequence counter the chip has
+ * already moved past, so it fails its checksum and the session ends, and a
+ * PACE step run twice leaves the protocol in a state the chip refuses to
+ * continue from.
+ *
+ * So a lost answer is asked for with R(NAK), rule 4, or with the same R(ACK)
+ * while the card is chaining its answer, rule 5. A card that had the block
+ * sends its last answer again, rule 11, without executing anything; one that
+ * never had it says so with an R(ACK) carrying the other block number, rule
+ * 12, and only then is the block itself sent again, rule 6.
  */
 #define EMRTD_ISODEP_RETRIES 2
 

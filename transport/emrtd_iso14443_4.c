@@ -35,10 +35,11 @@ struct EmrtdIso14443_4 {
      * What the radio said about each frame of the APDU being exchanged. One
      * EmrtdError covers a timeout, a checksum failure and an internal fault,
      * and when a command goes unanswered three times it matters whether all
-     * three failed the same way.
+     * three failed the same way. A recovery round can cost two frames - the
+     * R(NAK), and the block again if the card never had it - hence the size.
      */
     Iso14443_3aError last_error;
-    uint8_t frame_errors[EMRTD_ISODEP_RETRIES + 2];
+    uint8_t frame_errors[2 * EMRTD_ISODEP_RETRIES + 2];
     uint8_t frame_error_count;
     BitBuffer* tx_buffer;
     BitBuffer* rx_buffer;
@@ -295,6 +296,25 @@ void emrtd_iso14443_4_failure_detail(
     for(uint8_t i = 0; i < instance->frame_error_count && pos + 4 < out_size; i++) {
         pos += (size_t)snprintf(out + pos, out_size - pos, " %u", instance->frame_errors[i]);
     }
+}
+
+bool emrtd_iso14443_4_recovery_detail(const EmrtdIso14443_4* instance, char* out, size_t out_size) {
+    if(out == NULL || out_size == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if(instance == NULL || instance->frame_error_count == 0) {
+        return false;
+    }
+
+    /* Fields of the trace never contain a space, so the codes are joined by commas. */
+    size_t pos =
+        (size_t)snprintf(out, out_size, "lost=%u radio=", (unsigned)instance->frame_error_count);
+    for(uint8_t i = 0; i < instance->frame_error_count && pos + 4 < out_size; i++) {
+        pos += (size_t)snprintf(
+            out + pos, out_size - pos, "%s%u", i > 0 ? "," : "", instance->frame_errors[i]);
+    }
+    return true;
 }
 
 void emrtd_iso14443_4_set_trace(

@@ -11,8 +11,9 @@
  *
  * The rest drives the layer against a simulated chip that implements the card
  * half of the protocol: it reassembles a chained command, chains its own
- * answer, asks for a waiting time extension, and can swallow a frame so that
- * retransmission has something to recover from.
+ * answer, asks for a waiting time extension, numbers its blocks by the rules
+ * of section 7.5.3, and can lose a frame on the way in or its answer on the
+ * way out, so that recovery has something to recover from.
  */
 
 #include "emrtd_test.h"
@@ -30,7 +31,11 @@ typedef struct {
     size_t ats_len;
 
     bool activated;
-    uint8_t block_number; /**< The last one the reader used. */
+    uint8_t block_number; /**< The card's own, rules C to E of ISO/IEC 14443-4. */
+
+    /* The block last sent, which rule 11 has the card send again. */
+    uint8_t last_block[CHIP_APDU_MAX + 1];
+    size_t last_block_len;
 
     uint8_t command[CHIP_APDU_MAX]; /**< The command, reassembled. */
     size_t command_len;
@@ -44,7 +49,13 @@ typedef struct {
     uint8_t wtxm;
     unsigned wtx_answered;
 
-    unsigned drop_next; /**< Frames to swallow instead of answering. */
+    unsigned drop_next; /**< Frames to swallow before the card sees them. */
+    unsigned lose_skip; /**< Answers to deliver before the losing starts. */
+    unsigned lose_answers; /**< Answers the card sends that never arrive. */
+
+    /* The protocol control byte of every frame the reader sent, in order. */
+    uint8_t pcbs[32];
+    unsigned pcb_count;
 
     uint32_t last_fwt;
     unsigned frames;
@@ -67,6 +78,36 @@ static void chip_delay(void* context, uint32_t ms) {
     chip->frames_at_wait = chip->frames;
 }
 
+/**
+ * Put a block on the wire and remember it, because rule 11 may ask for it again.
+ *
+ * An answer the test has told the card to lose is still sent, as far as the
+ * card knows: its state has moved on, and only the reader never hears it.
+ */
+static EmrtdError chip_send(
+    Chip* chip,
+    const uint8_t* block,
+    size_t len,
+    uint8_t* rx,
+    size_t rx_cap,
+    size_t* rx_len) {
+    if(len > rx_cap || len > sizeof(chip->last_block)) {
+        return EmrtdErrorBufferTooSmall;
+    }
+    memcpy(chip->last_block, block, len);
+    chip->last_block_len = len;
+
+    if(chip->lose_skip > 0) {
+        chip->lose_skip--;
+    } else if(chip->lose_answers > 0) {
+        chip->lose_answers--;
+        return EmrtdErrorCardLost;
+    }
+    memcpy(rx, block, len);
+    *rx_len = len;
+    return EmrtdErrorNone;
+}
+
 /** Put one frame of the answer on the wire, chaining if the chip was told to. */
 static EmrtdError chip_answer(Chip* chip, uint8_t* rx, size_t rx_cap, size_t* rx_len) {
     const size_t remaining = chip->response_len - chip->response_sent;
@@ -76,14 +117,20 @@ static EmrtdError chip_answer(Chip* chip, uint8_t* rx, size_t rx_cap, size_t* rx
     }
     const bool last = (chip->response_sent + chunk) == chip->response_len;
 
-    if(1 + chunk > rx_cap) {
+    uint8_t block[CHIP_APDU_MAX + 1];
+    if(1 + chunk > sizeof(block)) {
         return EmrtdErrorBufferTooSmall;
     }
-    rx[0] = (uint8_t)(0x02 | (chip->block_number & 0x01) | (last ? 0x00 : 0x10));
-    memcpy(rx + 1, chip->response + chip->response_sent, chunk);
+    block[0] = (uint8_t)(0x02 | (chip->block_number & 0x01) | (last ? 0x00 : 0x10));
+    memcpy(block + 1, chip->response + chip->response_sent, chunk);
     chip->response_sent += chunk;
-    *rx_len = 1 + chunk;
-    return EmrtdErrorNone;
+    return chip_send(chip, block, 1 + chunk, rx, rx_cap, rx_len);
+}
+
+/** Ask the reader for more time, as rule 9 allows instead of an answer. */
+static EmrtdError chip_ask_wtx(Chip* chip, uint8_t* rx, size_t rx_cap, size_t* rx_len) {
+    const uint8_t block[2] = {0xF2, chip->wtxm};
+    return chip_send(chip, block, sizeof(block), rx, rx_cap, rx_len);
 }
 
 static EmrtdError chip_frame(
@@ -99,6 +146,9 @@ static EmrtdError chip_frame(
     chip->frames++;
     chip->last_fwt = fwt_fc;
     *rx_len = 0;
+    if(tx_len > 0 && chip->pcb_count < sizeof(chip->pcbs)) {
+        chip->pcbs[chip->pcb_count++] = tx[0];
+    }
 
     if(chip->drop_next > 0) {
         chip->drop_next--;
@@ -118,6 +168,8 @@ static EmrtdError chip_frame(
         memcpy(rx, chip->ats, chip->ats_len);
         *rx_len = chip->ats_len;
         chip->activated = true;
+        /* Rule C: the card's block number starts at 1. */
+        chip->block_number = 1;
         return EmrtdErrorNone;
     }
     if(!chip->activated) {
@@ -142,44 +194,56 @@ static EmrtdError chip_frame(
             chip->wtx_pending--;
         }
         if(chip->wtx_pending > 0) {
-            rx[0] = 0xF2;
-            rx[1] = chip->wtxm;
-            *rx_len = 2;
-            return EmrtdErrorNone;
+            return chip_ask_wtx(chip, rx, rx_cap, rx_len);
         }
         return chip_answer(chip, rx, rx_cap, rx_len);
     }
 
-    /* R(ACK): the reader asking for the next block of a chained answer. */
+    /* R-blocks. */
     if((pcb & 0xE6) == 0xA2) {
-        chip->block_number = pcb & 0x01;
+        const bool nak = (pcb & 0x10) != 0;
+        const bool current = (pcb & 0x01) == chip->block_number;
+
+        /* Rule 11: the reader lost what the card last sent, so it goes again. */
+        if(current) {
+            return chip_send(chip, chip->last_block, chip->last_block_len, rx, rx_cap, rx_len);
+        }
+        /* Rule 12: the reader lost a block the card never had, and is told so. */
+        if(nak) {
+            const uint8_t ack[1] = {(uint8_t)(0xA2 | chip->block_number)};
+            return chip_send(chip, ack, sizeof(ack), rx, rx_cap, rx_len);
+        }
+        /* Rules E and 13: the next block of a chained answer. */
+        chip->block_number ^= 1;
         return chip_answer(chip, rx, rx_cap, rx_len);
     }
 
     /* I-block. */
     if((pcb & 0xE2) == 0x02) {
+        /*
+         * Rule D, and the reason recovery is never a second copy of this block:
+         * the card toggles its number and executes whatever I-block arrives,
+         * whichever number it carries.
+         */
+        chip->block_number ^= 1;
+
         const size_t inf = tx_len - 1;
         if(chip->command_len + inf > CHIP_APDU_MAX) {
             return EmrtdErrorBufferTooSmall;
         }
         memcpy(chip->command + chip->command_len, tx + 1, inf);
         chip->command_len += inf;
-        chip->block_number = pcb & 0x01;
 
         if(pcb & 0x10) {
-            /* Chained: acknowledge with the block number that was just used. */
-            rx[0] = (uint8_t)(0xA2 | (pcb & 0x01));
-            *rx_len = 1;
-            return EmrtdErrorNone;
+            /* Chained: rule 2, an acknowledgement carrying the card's number. */
+            const uint8_t ack[1] = {(uint8_t)(0xA2 | chip->block_number)};
+            return chip_send(chip, ack, sizeof(ack), rx, rx_cap, rx_len);
         }
 
         chip->commands++;
         chip->response_sent = 0;
         if(chip->wtx_pending > 0) {
-            rx[0] = 0xF2;
-            rx[1] = chip->wtxm;
-            *rx_len = 2;
-            return EmrtdErrorNone;
+            return chip_ask_wtx(chip, rx, rx_cap, rx_len);
         }
         return chip_answer(chip, rx, rx_cap, rx_len);
     }
@@ -489,6 +553,15 @@ static void test_wtx(void) {
 
 /* --- Recovery ------------------------------------------------------------ */
 
+/** The frames the reader sent since @p from, as hex, for the sequence checks. */
+static void chip_pcbs_since(const Chip* chip, unsigned from, char* out, size_t out_size) {
+    size_t pos = 0;
+    out[0] = '\0';
+    for(unsigned i = from; i < chip->pcb_count && pos + 3 <= out_size; i++) {
+        pos += (size_t)snprintf(out + pos, out_size - pos, "%02X", chip->pcbs[i]);
+    }
+}
+
 static void test_retransmission(void) {
     static const uint8_t ats[] = {0x05, 0x78, 0x80, 0x70, 0x02};
     static const uint8_t response[] = {0x90, 0x00};
@@ -496,30 +569,185 @@ static void test_retransmission(void) {
 
     Chip chip;
     EmrtdIsoDep isodep;
-    uint8_t rx[64];
+    uint8_t rx[512];
     size_t rx_len = 0;
+    char sequence[80];
+    unsigned mark = 0;
 
-    emrtd_test_begin("a lost answer is asked for again rather than ending the read");
+    /*
+     * ISO/IEC 14443-4 annex B, scenario 8. The card executed the command and
+     * its answer was lost; the reader asks for it with R(NAK) and gets it,
+     * and the command has run once. Sending the I-block a second time would
+     * have run it twice - which under Secure Messaging ends the session.
+     */
+    emrtd_test_begin("a lost answer is asked for with R(NAK), and the command runs once");
     open_session(&chip, &isodep, ats, sizeof(ats));
     chip.response = response;
     chip.response_len = sizeof(response);
-    chip.drop_next = 1;
+    chip.lose_answers = 1;
+    mark = chip.pcb_count;
     TEST_EQ_INT(
         emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
         EmrtdErrorNone);
     TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B2");
 
-    emrtd_test_begin("a chip that has really gone is reported after the attempts run out");
+    emrtd_test_begin("and the block numbers are still in step afterwards");
+    chip.command_len = 0;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 2);
+
+    /* Scenario 9: the R(NAK)'s own answer is lost too, and a second one is sent. */
+    emrtd_test_begin("an answer lost twice over is still recovered, still without a replay");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.lose_answers = 2;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B2B2");
+
+    /*
+     * Scenario 6. The command never reached the card; R(NAK) finds that out,
+     * because the card answers with an R(ACK) that is not the reader's number,
+     * and only then is the block sent again.
+     */
+    emrtd_test_begin("a command that never arrived is sent again once the card says so");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B202");
+
+    /* Scenario 7: the same, one command later, with the other block number. */
+    emrtd_test_begin("the recovery carries whichever block number is current");
+    chip.command_len = 0;
+    chip.drop_next = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(chip.commands, 2);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "03B303");
+
+    /* Scenario 10: the card's request for more time is what went missing. */
+    emrtd_test_begin("a lost request for more time is asked for again and granted");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.wtx_pending = 1;
+    chip.wtxm = 4;
+    chip.lose_answers = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    TEST_EQ_INT(chip.wtx_answered, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B2F2");
+
+    /* Scenario 13: the time was granted, and the answer after it was lost. */
+    emrtd_test_begin("an answer lost after an extension is recovered without a replay");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.wtx_pending = 1;
+    chip.wtxm = 4;
+    chip.lose_skip = 1;
+    chip.lose_answers = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+    TEST_EQ_INT(chip.commands, 1);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02F2B2");
+
+    /*
+     * Rule 5. While the card is chaining its answer the recovery is the same
+     * R(ACK) again, and the card repeats the block it sent rather than moving
+     * on - so the answer arrives whole, with no piece missing or doubled.
+     */
+    emrtd_test_begin("a lost block of a chained answer is asked for with the same R(ACK)");
+    open_session(&chip, &isodep, ats, sizeof(ats));
+    uint8_t long_response[200];
+    for(size_t i = 0; i < sizeof(long_response); i++) {
+        long_response[i] = (uint8_t)(0x30 + i);
+    }
+    chip.response = long_response;
+    chip.response_len = sizeof(long_response);
+    chip.response_chunk = 64;
+    chip.lose_skip = 1;
+    chip.lose_answers = 1;
+    mark = chip.pcb_count;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(rx_len, sizeof(long_response));
+    TEST_CHECK(memcmp(rx, long_response, sizeof(long_response)) == 0);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02A3A3A2A3");
+
+    /*
+     * The other direction: the reader is chaining the command, and the card's
+     * acknowledgement of a piece is lost. R(NAK) brings the acknowledgement
+     * back and the piece is not delivered twice.
+     */
+    emrtd_test_begin("a lost acknowledgement of a chained command does not double a piece");
+    static const uint8_t small_ats[] = {0x05, 0x72, 0x80, 0x70, 0x02};
+    open_session(&chip, &isodep, small_ats, sizeof(small_ats));
+    uint8_t long_command[70];
+    for(size_t i = 0; i < sizeof(long_command); i++) {
+        long_command[i] = (uint8_t)i;
+    }
+    chip.response = response;
+    chip.response_len = sizeof(response);
+    chip.lose_answers = 1;
+    TEST_EQ_INT(
+        emrtd_isodep_transceive(
+            &isodep, long_command, sizeof(long_command), rx, sizeof(rx), &rx_len),
+        EmrtdErrorNone);
+    TEST_EQ_INT(chip.command_len, sizeof(long_command));
+    TEST_CHECK(memcmp(chip.command, long_command, sizeof(long_command)) == 0);
+    TEST_EQ_INT(chip.commands, 1);
+    TEST_EQ_HEX(rx, rx_len, "9000");
+
+    emrtd_test_begin("a chip that has really gone is reported after the rounds run out");
     open_session(&chip, &isodep, ats, sizeof(ats));
     chip.response = response;
     chip.response_len = sizeof(response);
     chip.drop_next = 99;
     const unsigned before = chip.frames;
+    mark = chip.pcb_count;
     TEST_EQ_INT(
         emrtd_isodep_transceive(&isodep, command, sizeof(command), rx, sizeof(rx), &rx_len),
         EmrtdErrorCardLost);
-    /* The first attempt and then the retries, and not one frame more. */
+    /* The block, then one R(NAK) per round, and not one frame more. */
     TEST_EQ_INT(chip.frames - before, EMRTD_ISODEP_RETRIES + 1);
+    TEST_EQ_INT(chip.commands, 0);
+    chip_pcbs_since(&chip, mark, sequence, sizeof(sequence));
+    TEST_EQ_STR(sequence, "02B2B2");
 
     emrtd_test_begin("deselect releases the card and closes the session");
     open_session(&chip, &isodep, ats, sizeof(ats));

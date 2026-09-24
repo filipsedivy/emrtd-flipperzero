@@ -136,7 +136,22 @@ typedef struct {
 
     EmrtdError error;
     EmrtdFileId error_file; /**< Which file the error belongs to, if any. */
+    /**
+     * How far the read had got when it stopped: the last stage it reported
+     * before the error. Meaningful only while @c error is set, and what
+     * emrtd_worker_stopped_text() turns into words.
+     */
+    EmrtdWorkerStage error_stage;
 } EmrtdReadResult;
+
+/**
+ * Where a read that failed had got to, in one sentence, or NULL.
+ *
+ * The error says what went wrong and this says when, and the two together are
+ * what tells a chip that went quiet while it computed PACE from one that went
+ * quiet half way through DG2. Static; safe from any thread.
+ */
+const char* emrtd_worker_stopped_text(const EmrtdReadResult* result);
 
 /** Progress, delivered on the NFC thread. */
 typedef struct {

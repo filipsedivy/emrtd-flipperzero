@@ -115,3 +115,19 @@
     a 1 kB thread (about 2.9 kB). lab.flipper.net starts the screen mirror by
     itself - its landing page is the Device page, whose `onMounted` calls
     `startScreenStream()` as soon as RPC is up.
+
+## Radio errors (read from the source, 2026-09-24)
+
+21. **A damaged answer is reported as a card that is not there.**
+    `iso14443_3a_poller_process_error()` in
+    `lib/nfc/protocols/iso14443_3a/iso14443_3a_poller_i.c` of the 1.4.3 tree
+    maps `NfcErrorTimeout` to `Iso14443_3aErrorTimeout` and every other
+    `NfcError` - an incomplete frame, a data format error, a FIFO overflow - to
+    `Iso14443_3aErrorNotPresent`. Only a bad CRC on a frame that arrived whole
+    comes back as `Iso14443_3aErrorWrongCrc`. So a chip that answered at the
+    edge of the field is named as one that is not present, and this reader,
+    which maps a timeout and "not present" alike to "The document moved
+    away", can only tell the two apart by the trace's radio codes: `7` is a
+    timeout, `1` not present, `6` a bad CRC. Both are recovered from with
+    R(NAK) rather than by sending the command again - see
+    `EMRTD_ISODEP_RETRIES` in `transport/emrtd_isodep.h` for why.

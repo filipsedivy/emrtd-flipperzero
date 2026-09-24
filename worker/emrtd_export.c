@@ -719,6 +719,10 @@ EmrtdError emrtd_export_write_report(
     if(result->error != EmrtdErrorNone) {
         emrtd_export_line(export_ctx, file, "--- How the read ended ---");
         emrtd_export_line(export_ctx, file, "%s", emrtd_error_text(result->error));
+        const char* stopped = emrtd_worker_stopped_text(result);
+        if(stopped != NULL) {
+            emrtd_export_line(export_ctx, file, "%s", stopped);
+        }
         emrtd_export_line(export_ctx, file, "%s", emrtd_error_hint(result->error));
         emrtd_export_blank(export_ctx, file);
     }

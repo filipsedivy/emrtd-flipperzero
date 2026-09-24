@@ -71,6 +71,7 @@ fields at the first token without an `=` in it.
 | `file` | `name`, `size`, `chunk` | The first answer of a file arrived: how long the file says it is, and how much of it this reader asks for at a time |
 | `read` | `off`, `le`, `form` | A `READ BINARY`. `form=short` carries the offset in P1-P2, `form=odd` in `DO'54'` with instruction `B1` |
 | `retry` | `off`, `le`, `asked` | The chip answered `6CXX` and named the length it would give |
+| `recover` | `lost`, `radio` | The `<` line above arrived, but not first time: `lost` frames went unanswered or arrived damaged and the answer was asked for again. `radio` lists the radio's code for each, comma separated |
 | `sw` | `code` (a sentence) | Every response that could be read, with what the status word means. A response whose envelope failed to verify has no status word to report and gets an `error` note instead |
 | `eof` | `reason`, `at` | A file ended: `6282`, `6B00`, or an answer with no data in it |
 | `skip` | `name`, `reason` | A group that was never asked for: `eac`, or `deselected` in Options |
@@ -157,6 +158,11 @@ number of rounds.
   A two byte unprotected answer is the chip saying the session has gone
   (`6987`, `6988`); a checksum that did not verify is a different failure, and
   the `<` line above the note is the evidence for either.
+- **A document that reads only just.** `# recover` lines mean answers are
+  being lost and recovered. A few on DG2 are a marginal field; one under every
+  PACE step is a chip that draws more than the field gives while it computes.
+  Radio code `7` is a timeout, `1` an answer that arrived damaged - the
+  firmware reports both as a card that is not present.
 - **A read that never gets that far.** `# card` carries the frame size and the
   waiting time the reader armed, and `# error stage=exchange` carries what the
   radio said. A document that answers the scan and then stops is nearly always
