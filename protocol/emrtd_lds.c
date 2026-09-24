@@ -6,7 +6,7 @@
  *
  * Every parser here works on a buffer it does not own and writes into fixed
  * fields the caller supplied, because the alternative - building an object
- * graph - is not available on a hundred kilobytes of heap. Nothing is fatal
+ * graph - is not available on 186 KB of heap. Nothing is fatal
  * except a file that is not the file it claims to be: a missing optional
  * element leaves its field empty and the read goes on, since a passport that
  * omits an optional data object is not a passport that is broken.

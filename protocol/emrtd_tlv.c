@@ -27,7 +27,7 @@
  * Longest length field accepted.
  *
  * Four bytes describe a value of up to 4 GiB, which is already absurd for a
- * file that has to fit in a hundred kilobytes of heap; the limit is here to
+ * file that has to fit in a 186 KB heap; the limit is here to
  * keep the accumulator from overflowing, not to be generous.
  */
 #define EMRTD_TLV_MAX_LENGTH_BYTES 4

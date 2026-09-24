@@ -178,6 +178,13 @@ is written not to hold a file:
   firmware a request the allocator cannot meet crashes rather than returning
   NULL. The commonest cause is a computer attached over USB, which costs about
   20 KB.
+- Nothing collects garbage, in the firmware or here. Every allocation has one
+  owner and one scope: the application, one read, one file, one step or one
+  screen. It is freed where that scope ends. A block that is not freed stays
+  allocated until the device restarts, because closing the application frees
+  only the application's image and its thread. The allocator zeroes what it
+  frees and what it hands out. Items 22 to 26 of [platform.md](platform.md)
+  have the detail, and how to check a read for leaks on the device.
 
 ## Errors
 

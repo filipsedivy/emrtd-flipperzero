@@ -247,8 +247,9 @@ void emrtd_export_free(EmrtdExport* export_ctx) {
         furi_record_close(RECORD_STORAGE);
     }
 
-    /* The path is built from the document number, so the block is cleared
-     * before it goes back to an allocator that does not zero on free. */
+    /* The path is built from the document number. The allocator clears the
+     * block on free (docs/platform.md, item 23); this wipe repeats that in
+     * case a build does not. */
     emrtd_secure_wipe(export_ctx, sizeof(*export_ctx));
     free(export_ctx);
 }

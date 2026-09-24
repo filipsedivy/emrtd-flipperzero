@@ -6,7 +6,7 @@
  *
  * Everything inside a passport - the LDS files, the security infos, the
  * Secure Messaging envelopes - is nested tag-length-value. The reader has to
- * walk kilobytes of it on a device with a hundred kilobytes of heap, so this
+ * walk kilobytes of it on a device with 186 KB of heap, so this
  * parser never copies and never allocates: a node points into the buffer it
  * was parsed from, and iteration is a cursor.
  *

@@ -264,7 +264,7 @@ static const EmrtdCurve emrtd_curves[] = {
      * emrtd_ec_curve_supported() before a single one of their bytes is read,
      * and carrying 1,596 bytes of prime, coefficients, generator and order
      * for them buys nothing - in a binary that is loaded into RAM, on a
-     * device whose whole heap is 186 kB.
+     * device whose whole heap is 186 KB.
      *
      * The identity is kept, because that is what the entries are for: a chip
      * that asks for brainpoolP512r1 gets told it asked for brainpoolP512r1,
@@ -453,8 +453,10 @@ int emrtd_ec_point_x(
     uint8_t* out) {
     /*
      * Both coordinates of the shared point land here and only x is wanted, so
-     * y would otherwise be left on the stack of the NFC thread - whose stack
-     * is a heap block that the allocator hands out again without zeroing.
+     * y would otherwise stay on the stack of the NFC thread for the rest of
+     * the read. The allocator clears that stack only when the thread is freed
+     * (docs/platform.md, item 23), and a running thread's stack keeps the
+     * frames it has returned from.
      */
     uint8_t encoded[1 + 2 * EMRTD_EC_COORD_MAX];
     size_t olen = 0;

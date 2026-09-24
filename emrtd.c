@@ -177,8 +177,9 @@ static void emrtd_free(Emrtd* app) {
      * which ufbt launch sends before every upload - stops the dispatcher with
      * a scene still on top, and its on_exit would never run: the LED would
      * keep blinking, the backlight Donate holds on would stay held for the
-     * whole device, and the keys screen would leave its hex in the heap. It
-     * has to run first, while every view it resets still exists.
+     * whole device, and the keys screen would skip its own wipe, which
+     * matters only on a build whose allocator does not clear. It has to run
+     * first, while every view it resets still exists.
      */
     scene_manager_stop(app->scene_manager);
 
@@ -242,8 +243,10 @@ static void emrtd_free(Emrtd* app) {
 
     /*
      * The credentials open someone's identity document and the result holds
-     * their name and date of birth. Neither has any business staying in the
-     * heap for the next application to allocate.
+     * their name and date of birth. free() below clears the block on every
+     * firmware this is built for (docs/platform.md, item 23). These wipes
+     * make sure this struct's copy also goes on a build that does not clear
+     * it. The copies the result screens made are already freed by then.
      */
     emrtd_secure_wipe(&app->config.credentials, sizeof(app->config.credentials));
     emrtd_secure_wipe(&app->result, sizeof(app->result));

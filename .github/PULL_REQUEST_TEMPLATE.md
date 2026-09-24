@@ -30,6 +30,8 @@ include a document number, a name or a date of birth. -->
       (see docs/platform.md)
 - [ ] No large buffers on the read path's stack; the NFC thread has 8 KB
 - [ ] Nothing holds a whole data group in memory
+- [ ] A large allocation is checked with `memmgr_heap_get_max_free_block()`
+      first, and freed in the scope that allocated it
 - [ ] Every return value checked, every error path frees what it allocated,
       mbed TLS contexts included
 - [ ] Key material and credentials wiped before they are freed

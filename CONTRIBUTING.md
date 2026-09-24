@@ -58,7 +58,7 @@ Beyond the formatter:
 ## The rules that come from the platform
 
 [docs/platform.md](docs/platform.md) is a record of what was measured on this
-firmware. Three of its entries will break a build or a read if they are
+firmware. Four of its entries will break a build or a read if they are
 ignored:
 
 - **never reference `mbedtls_mpi_exp_mod` or `mbedtls_mpi_core_exp_mod`.**
@@ -67,8 +67,17 @@ ignored:
   scope;
 - **no large buffers on the read path's stack.** The NFC worker thread has
   8 KB and the elliptic curve arithmetic runs there;
-- **nothing holds a whole data group.** The heap is about a hundred
-  kilobytes and DG2 can be forty; the export streams.
+- **nothing holds a whole data group.** The heap is 186 KB, half of it
+  taken by the application's own image, and DG2 can be forty; the export
+  streams;
+- **a large allocation is asked about before it is made.** `malloc` does not
+  return NULL on this firmware. It reboots the device, so the only place a
+  shortage can be handled is a check before the call. For one block, ask
+  `memmgr_heap_get_max_free_block()`. For a whole phase such as a read, ask
+  both that and `memmgr_get_free_heap()`, as `emrtd_scene_read_have_memory()`
+  does. Nothing collects garbage either: whatever allocates a block frees it
+  in the same scope. See items 17 and 22 of
+  [docs/platform.md](docs/platform.md).
 
 And two that come from the runtime: `furi_check()` and the `bit_buffer_*`
 family abort the application on misuse rather than returning an error, so

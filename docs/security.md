@@ -122,17 +122,40 @@ not: the error screen shows what was used and Retry runs again with it.
 Wiping is `emrtd_secure_wipe()`, which is `mbedtls_platform_zeroize()` and not
 `memset()`. The difference is not pedantry: a `memset()` over a buffer that is
 never read again is a dead store, and at the `-Os` every FAP is built with, the
-compiler deletes it. On this device a thread stack is a heap block, and the
-allocator does not zero what it hands out, so a wipe that the optimiser removed
-would leave the session keys in the next application's memory.
+compiler deletes it.
 
-What a screen leaves behind is the honest limit here. **Result -> Keys**
-overwrites its own text before releasing it, but the widget it hands the string
-to keeps a copy that the toolkit frees without clearing, and the same is true of
-every screen that shows the holder's name or the machine readable zone. Freed
-heap is not handed to another application without the allocator reusing it
-first, and nothing in this application reads it back - but it is not a wipe, and
-calling it one would be untrue.
+The allocator does part of this job on its own, and saying otherwise would be
+as untrue as claiming a wipe that is not there. The official firmware,
+Unleashed and Momentum all zero every heap block when it is freed and again
+when it is handed out (item 23 of [platform.md](platform.md)). So nothing this
+application frees carries its contents into the next application. What the
+allocator cannot reach is memory still in use: a buffer that is still
+allocated, and the stack of a thread that is still running, which keeps the
+frames it has returned from until something overwrites them. The key derivation
+and the secure messaging run on the NFC stack's thread for the whole read. The
+wipes of memory that stays allocated are the ones that do work of their own:
+those stack buffers, the session in the worker, the read result, which is
+reused rather than freed, and the screens' shared text store. A wipe just
+before a `free()` repeats what the allocator is about to do. It is kept for a
+build of the firmware without the clear. Even there it would matter only to
+something that reads freed memory directly, such as a debugger or a
+use-after-free, because `malloc` clears what it hands out whatever the flag
+says.
+
+The honest limit is what a screen holds while it is open. **Result -> Keys**
+builds its text in a string and hands it to a widget, which makes copies of its
+own. The same is true of every screen that shows the holder's name or the
+machine readable zone. A saved report is shown by a text box, which reads the
+string it is given and copies only the page on screen. All of these copies sit
+in the heap in the clear until the screen is left, and the result they were
+drawn from stays there as long as the application runs. Leaving the screen
+frees them, and on the three firmwares above, freeing them clears them. On a
+build without the clear, the string Keys overwrites itself would be gone, but
+the widget's copies, and the smaller buffers the string outgrew while it was
+being built, would stay in freed heap until they were reused. A restart does
+not clear the heap either. What a screen or the read held when the device
+crashed or rebooted stays in RAM until something overwrites it (item 23 of
+[platform.md](platform.md)).
 
 The keys never reach the export or the trace, and that is a rule the code is
 built to rather than a description of it: `EmrtdReadResult` is the struct

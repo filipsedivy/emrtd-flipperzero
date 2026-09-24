@@ -6,7 +6,7 @@
  * chip.
  *
  * The bytes are read back from the export rather than kept in memory: DG2
- * alone is tens of kilobytes against a hundred kilobyte heap, and a preview
+ * alone is tens of kilobytes against a 186 KB heap, and a preview
  * is not worth holding a file for.
  */
 #include "../emrtd_i.h"

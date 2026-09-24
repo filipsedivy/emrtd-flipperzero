@@ -14,6 +14,15 @@
 #define EMRTD_REPORT_MAX_BYTES (4096)
 #define EMRTD_REPORT_CHUNK     (128)
 
+/** Appended when the report is longer than the ceiling. */
+#define EMRTD_REPORT_TRUNCATED "\n... the rest is on the card."
+
+/*
+ * The most of a file the loop below can take in: the last read may carry it up
+ * to a chunk past the ceiling.
+ */
+#define EMRTD_REPORT_READ_MAX (EMRTD_REPORT_MAX_BYTES + EMRTD_REPORT_CHUNK)
+
 static void emrtd_scene_saved_detail_load(Emrtd* app) {
     FuriString* text = app->text_box_store;
     furi_string_reset(text);
@@ -24,6 +33,20 @@ static void emrtd_scene_saved_detail_load(Emrtd* app) {
            file, furi_string_get_cstr(app->file_path), FSAM_READ, FSOM_OPEN_EXISTING)) {
         furi_string_printf(text, "Cannot open\n%s", furi_string_get_cstr(app->file_path));
     } else {
+        /*
+         * One allocation of the most the text can reach: what the loop can
+         * take in, the note and the terminator. A string that grows by
+         * appending is reallocated each time it outgrows its buffer. For a
+         * full report that is seven allocations, six of them while the one
+         * before is still held (docs/platform.md, item 24). The file's own
+         * size keeps a short one from taking the whole ceiling.
+         */
+        const uint64_t file_size = storage_file_size(file);
+        furi_string_reserve(
+            text,
+            (size_t)MIN(file_size, (uint64_t)EMRTD_REPORT_READ_MAX) +
+                sizeof(EMRTD_REPORT_TRUNCATED));
+
         char chunk[EMRTD_REPORT_CHUNK + 1];
         size_t total = 0;
 
@@ -48,7 +71,7 @@ static void emrtd_scene_saved_detail_load(Emrtd* app) {
         }
 
         if(total >= EMRTD_REPORT_MAX_BYTES && !storage_file_eof(file)) {
-            furi_string_cat_str(text, "\n... the rest is on the card.");
+            furi_string_cat_str(text, EMRTD_REPORT_TRUNCATED);
         }
         if(total == 0) {
             furi_string_set_str(text, "The file is empty.");

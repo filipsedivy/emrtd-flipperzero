@@ -4,7 +4,7 @@
  *
  * Writing a read out to the SD card.
  *
- * DG2 alone can be forty kilobytes against a hundred kilobyte heap, so a file
+ * DG2 alone can be forty kilobytes against a 186 KB heap, so a file
  * is never assembled in memory. The export is opened before the read starts
  * and every chunk that comes off the chip goes straight to storage while a
  * running hash is updated for the passive authentication check.

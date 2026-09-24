@@ -1319,7 +1319,9 @@ static EmrtdError emrtd_worker_read_file(EmrtdWorker* worker, EmrtdFileId id) {
     }
 
     if(parse.data != NULL) {
-        /* The data groups hold personal details; do not leave them on the heap. */
+        /* The data groups hold personal details. free() clears the block on
+         * every firmware this is built for (docs/platform.md, item 23); the
+         * wipe repeats that in case a build does not. */
         emrtd_secure_wipe(parse.data, parse.capacity);
         free(parse.data);
     }

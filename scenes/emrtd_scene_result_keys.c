@@ -98,11 +98,13 @@ void emrtd_scene_result_keys_on_exit(void* context) {
     widget_reset(app->widget);
 
     /*
-     * furi_string_reset() only sets the length to zero, and what is left in
-     * the buffer is the keys as hex. Overwrite it first. The widget kept a
-     * copy of its own that widget_reset() frees without clearing, which this
-     * screen shares with every other one that shows the holder's details; it
-     * is stated in docs/security.md rather than pretended away.
+     * furi_string_reset() frees the buffer holding the keys as hex, and so
+     * does widget_reset() with the widget's copy. On every firmware this is
+     * built for, the allocator clears a block when it is freed
+     * (docs/platform.md, item 23). The overwrite below repeats that for this
+     * buffer only. On a build without the clear, the widget's copy and the
+     * smaller buffers this string outgrew while it was being built would
+     * stay.
      */
     const size_t len = furi_string_size(app->text_box_store);
     for(size_t i = 0; i < len; i++) {

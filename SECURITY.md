@@ -24,8 +24,8 @@ credited unless they would rather not be.
 ## What is in scope
 
 This is a reader for hostile input: a chip decides what it answers with, and
-every byte of that answer is parsed on a device with a hundred kilobytes of
-heap. The interesting failures are therefore:
+every byte of that answer is parsed on a device with 186 KB of heap. The
+interesting failures are therefore:
 
 - **memory safety in the parsers** - `protocol/emrtd_tlv.c` and everything
   built on it, reached by a malformed or deliberately crafted file;
