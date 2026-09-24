@@ -66,7 +66,9 @@ void emrtd_scene_read_success_on_enter(void* context) {
     }
 
     widget_add_string_element(widget, 64, 1, AlignCenter, AlignTop, FontPrimary, "Document read");
-    widget_add_text_scroll_element(widget, 0, 13, 128, 36, furi_string_get_cstr(body));
+    /* 34, not 36, so that no fourth line is drawn under the button; see the
+     * error scene for the arithmetic. */
+    widget_add_text_scroll_element(widget, 0, 13, 128, 34, furi_string_get_cstr(body));
     widget_add_button_element(
         widget, GuiButtonTypeCenter, "Details", emrtd_scene_read_success_button_callback, app);
 

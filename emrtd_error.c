@@ -4,11 +4,31 @@
  *
  * The text behind every error code.
  *
- * The person holding the document sees one line and one paragraph, and they
- * are the only explanation they get: there is no log to consult and no second
- * screen. So the hint always names the next thing to try, and where the
- * failure is a property of this hardware rather than of the document it says
- * so, because otherwise the user keeps retrying something that cannot work.
+ * The person holding the document sees a heading and a hint, and they are the
+ * only explanation they get: there is no log to consult and no second screen.
+ * So the hint names the next thing to try, and where the failure is a
+ * property of this hardware rather than of the document it says so, because
+ * otherwise the user keeps retrying something that cannot work. The background
+ * behind each one is in docs/troubleshooting.md, not here.
+ *
+ * Both have to fit a 128x64 screen, so the budgets are pixels of the
+ * firmware's own fonts, and tests/host measures every string against them:
+ *
+ * - The heading is a single FontPrimary string element, and that does not
+ *   wrap: whatever is wider than the screen is cut off at both edges. At most
+ *   124 px of glyph advances, which is about twenty characters.
+ * - The hint goes into a text scroll element, which breaks a line at whichever
+ *   glyph crosses its width, in the middle of a word if need be. So every hint
+ *   is broken by hand, one string literal to a screen line, and each line stays
+ *   within 120 px of FontSecondary: 124 px is the scroll element, 120 px the
+ *   text box that shows the same hint again in a saved report.
+ * - Three lines at most. That is what the error screen shows above its buttons
+ *   without scrolling, and it is all most people will read.
+ *
+ * A hint is only ever read for an error that ended the whole read - on the
+ * error screen and in report.txt. A file that fails is marked with its heading
+ * and the read goes on, so what a hint describes is the application, the key
+ * exchange or the radio, never one file.
  */
 
 #include "emrtd_error.h"
@@ -25,154 +45,160 @@ typedef struct {
  * even when the order changes.
  */
 static const EmrtdErrorStrings emrtd_error_strings[] = {
-    [EmrtdErrorNone] = {"No error", "The read finished without a problem."},
+    [EmrtdErrorNone] =
+        {"No error",
+         "The read finished\n"
+         "without a problem."},
 
     [EmrtdErrorNoCard] =
         {"No document found",
-         "Lay the Flipper flat against the document - the middle of the open data page of "
-         "a passport, or the face of a card - and hold it still. In a booklet the chip sits "
-         "in the cover or in the data page itself, so a few centimetres decide it."},
+         "Lay the Flipper flat on the\n"
+         "data page or the card and\n"
+         "hold still. Try the cover too."},
 
     [EmrtdErrorCardLost] =
-        {"The document moved away",
-         "The chip lost the field before the read finished. Nothing was damaged: put the "
-         "document back and start again, keeping both still until the progress bar fills."},
+        {"Document moved away",
+         "The chip left the field.\n"
+         "Put it back and hold both\n"
+         "still until the bar fills."},
 
     [EmrtdErrorActivation] =
-        {"The chip will not open a session",
-         "The document answered when the reader looked for it, and then would not start "
-         "an ISO 14443-4 session. Lift the Flipper away, lay it back on the document and "
-         "read again. If it fails every time, send a trace: the card's own timing "
-         "parameters head the file and they say what the chip asked for."},
+        {"Chip would not connect",
+         "It answered, then would not\n"
+         "start a session. Lift the\n"
+         "Flipper, lay it back, retry."},
 
     [EmrtdErrorTransport] =
         {"Radio exchange failed",
-         "A frame did not come back. Metal in a wallet, a phone underneath, or a second "
-         "card in the field will all do this. Remove everything else and try again."},
+         "A reply did not arrive.\n"
+         "Move phones, metal and\n"
+         "other cards away, retry."},
 
     [EmrtdErrorProtocol] =
-        {"The chip broke the protocol",
-         "The answer did not fit ISO 14443-4. This is usually a marginal field rather than "
-         "a faulty chip, so move the document slightly and read again."},
+        {"Garbled chip reply",
+         "Usually a weak field, not\n"
+         "a faulty chip. Move the\n"
+         "document a little, retry."},
 
     [EmrtdErrorNotEmrtd] =
         {"Not an eMRTD document",
-         "The chip answered but carries no eMRTD application. Bank cards, transit cards and "
-         "access badges all answer and none of them carry it. A passport does, and so does "
-         "an identity card or a residence permit built to ICAO Doc 9303."},
+         "This chip has no eMRTD\n"
+         "application. Bank, transit\n"
+         "and access cards never do."},
 
     [EmrtdErrorApdu] =
-        {"The chip refused the command",
-         "The document answered with an error status instead of data. The status word is "
-         "shown above; it is the chip's own wording for what it disliked."},
+        {"Chip refused command",
+         "It sent an error status\n"
+         "instead of data. An APDU\n"
+         "trace shows which one."},
 
     [EmrtdErrorFileNotFound] =
-        {"That file is not on this chip",
-         "The document does not carry this data group. That is normal - only DG1, DG2 and "
-         "EF.SOD are mandatory, and the rest are up to the issuing state."},
+        {"Not found on this chip",
+         "The chip would not open\n"
+         "the eMRTD application.\n"
+         "Lay it back on and retry."},
 
     /*
-     * One status word, two situations, and only one of them is worth a retry.
-     * Where a file is what was refused the screen names it underneath this,
-     * and that is what tells the two apart: on DG3 or DG4 the refusal is
-     * final, anywhere else it is a lost session.
+     * What reaches this screen is a refusal of the application or of the key
+     * exchange, not of a file: a file that is refused is marked and the read
+     * goes on, and DG3 and DG4 are never asked for. 6983 means the chip has
+     * blocked itself after too many failures, so the hint says when to stop.
      */
     [EmrtdErrorAccessDenied] =
-        {"The chip refused access",
-         "Either the secure session is gone, in which case laying the document back on and "
-         "reading again is enough, or this is a file no reader can have: fingerprints and "
-         "iris images (DG3, DG4) need a state issued certificate, and that refusal is "
-         "final."},
+        {"Chip refused access",
+         "Lay it back on and retry.\n"
+         "If it keeps refusing, stop:\n"
+         "the chip may lock itself."},
 
     [EmrtdErrorWrongKey] =
-        {"The key does not open the chip",
-         "Check the document number, the date of birth and the date of expiry against the "
-         "document. The check digit is computed for you, so type the number exactly as "
-         "printed, letters included, and take the dates from the machine readable zone "
-         "rather than from the printed lines. Where the document prints a card access "
-         "number, that one value replaces all three."},
+        {"Key not accepted",
+         "Check the CAN, or number\n"
+         "and dates. Type the number\n"
+         "without its check digit."},
 
     [EmrtdErrorNoAccessMethod] =
-        {"No way in to this chip",
-         "Neither PACE nor BAC could be established. If the chip announced PACE with "
-         "parameters this build cannot compute, the detail above names them; otherwise the "
-         "credentials are the first thing to check."},
+        {"No way into the chip",
+         "This chip announces no\n"
+         "PACE. Set Options > Access\n"
+         "method to Automatic."},
 
     [EmrtdErrorPaceUnsupportedCurve] =
-        {"PACE curve out of reach",
-         "The chip asks for an elliptic curve wider than 256 bits. The mbed TLS that ships "
-         "with the Flipper firmware is built with a 256 bit limit, so this curve cannot be "
-         "computed on the device. If the document also offers BAC, choose it in the menu."},
+        {"PACE curve not usable",
+         "Unknown, or over 256 bits\n"
+         "for mbed TLS. BAC needs\n"
+         "the number and dates."},
 
     [EmrtdErrorPaceUnsupportedMapping] =
-        {"PACE mapping not implemented",
-         "This chip wants the integrated or the chip authentication mapping. Only the "
-         "generic mapping is implemented, which covers nearly every document in issue. If "
-         "the document also offers BAC, choose it in the menu."},
+        {"PACE mapping missing",
+         "Only generic mapping is\n"
+         "built in. BAC needs the\n"
+         "number and dates."},
 
     [EmrtdErrorPaceUnsupportedDh] =
-        {"PACE needs MODP arithmetic",
-         "This chip runs PACE over MODP (Diffie-Hellman) groups. The firmware's mbed TLS "
-         "cannot perform modular exponentiation - see docs/platform.md - so only the "
-         "elliptic curve variants work here. If the document also offers BAC, choose it."},
+        {"PACE DH not supported",
+         "The Flipper's mbed TLS has\n"
+         "no DH, only curves. BAC\n"
+         "needs the number and dates."},
 
     [EmrtdErrorPaceFailed] =
-        {"PACE authentication failed",
-         "The chip's token did not match the one computed here, which nearly always means "
-         "the MRZ input or the CAN is wrong. The CAN is the six digit number printed on the "
-         "document, separate from the document number, and an identity card usually has "
-         "one."},
+        {"PACE key rejected",
+         "The CAN or the MRZ values\n"
+         "do not match. The CAN is a\n"
+         "separate 6 digit number."},
 
     [EmrtdErrorSecureMessaging] =
-        {"The secure channel broke",
-         "A response failed its checksum, so it was discarded rather than trusted. An "
-         "unstable field corrupts the encrypted stream: move the document a little and "
-         "read again."},
+        {"Secure channel broke",
+         "A reply failed its check\n"
+         "and was dropped. Move the\n"
+         "document a little, retry."},
 
     [EmrtdErrorParse] =
-        {"The file is not what it claims",
-         "The chip returned something that does not match the structure ICAO Doc 9303 "
-         "describes. The raw bytes are still exported, so the file can be examined on a "
-         "computer."},
+        {"Malformed data",
+         "A chip reply does not\n"
+         "match ICAO 9303. Retry, or\n"
+         "send an APDU trace."},
 
     [EmrtdErrorUnsupported] =
-        {"Out of this reader's scope",
-         "The document uses a feature this reader understands but does not implement. The "
-         "raw file is exported unchanged."},
+        {"Not supported",
+         "This chip's PACE variant\n"
+         "is not built in. BAC needs\n"
+         "the number and dates."},
 
     [EmrtdErrorOutOfMemory] =
         {"Not enough memory",
-         "A read needs about 28 kB free, and one unbroken piece of 8 kB for the radio "
-         "thread. The Flipper has neither right now.\n\nA computer talking to the device "
-         "costs about 20 kB of that: close lab.flipper.net or qFlipper, unplug the cable, "
-         "and restart the Flipper. Restarting is what gives the memory back, because this "
-         "application is loaded into it."},
+         "Close qFlipper or\n"
+         "lab.flipper.net, unplug\n"
+         "USB, restart the Flipper."},
 
     [EmrtdErrorStorage] =
-        {"The SD card refused the write",
-         "Check that a card is inserted, is not write protected and has room left. The "
-         "read itself succeeded; only the export failed."},
+        {"SD card write failed",
+         "Check the card is in, not\n"
+         "locked and not full. The\n"
+         "read itself worked."},
 
     [EmrtdErrorBufferTooSmall] =
-        {"Value larger than expected",
-         "A field on the chip is bigger than the space this reader reserves for it. The "
-         "raw file is exported in full, so nothing is lost."},
+        {"Value too large",
+         "A reply is bigger than\n"
+         "this reader expects. An\n"
+         "APDU trace shows which."},
 
     [EmrtdErrorInvalidInput] =
-        {"The credentials are incomplete",
-         "The document number may be up to twenty characters of A-Z and 0-9. Both dates "
-         "are six digits in YYMMDD order, exactly as they appear in the machine readable "
-         "zone."},
+        {"Details incomplete",
+         "Set the number and both\n"
+         "dates, or a CAN. Press\n"
+         "Document to fill them in."},
 
     [EmrtdErrorCancelled] =
         {"Read cancelled",
-         "You left the read screen before it finished. Nothing was written to the card and "
-         "nothing was written to the SD card."},
+         "You left before it ended.\n"
+         "Files read until then are\n"
+         "kept in this folder."},
 
     [EmrtdErrorInternal] =
         {"Internal error",
-         "A library call failed in a way that should not happen. Restarting the "
-         "application clears any state that may have caused it."},
+         "Should not happen. Restart\n"
+         "the app; if it repeats,\n"
+         "report it with a trace."},
 };
 
 _Static_assert(
@@ -196,8 +222,9 @@ const char* emrtd_error_text(EmrtdError error) {
 const char* emrtd_error_hint(EmrtdError error) {
     const EmrtdErrorStrings* entry = emrtd_error_lookup(error);
     return entry != NULL ? entry->hint :
-                           "This error has no description, which is itself a bug. Please "
-                           "report what you were reading when it appeared.";
+                           "This error has no text,\n"
+                           "which is a bug. Please\n"
+                           "report what you read.";
 }
 
 EmrtdError emrtd_error_from_sw(uint16_t sw) {

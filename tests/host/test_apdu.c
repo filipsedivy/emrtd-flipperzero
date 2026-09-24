@@ -15,6 +15,7 @@
  */
 
 #include "emrtd_test.h"
+#include "emrtd_test_font.h"
 
 #include "../../emrtd_error.h"
 #include "../../protocol/emrtd_apdu.h"
@@ -288,29 +289,114 @@ static void test_status_words(void) {
     TEST_EQ_STR(first, emrtd_sw_text(0x6982));
 }
 
+/*
+ * The error screen is a FontPrimary heading, which does not wrap, over a text
+ * scroll element that breaks a line at whichever glyph crosses its width, over
+ * two buttons. The same hint is shown again by the text box of a saved report,
+ * which is 4 px narrower. See emrtd_error.c for where the numbers come from.
+ */
+#define EMRTD_TEST_HEADING_WIDTH 124u
+#define EMRTD_TEST_HINT_WIDTH    120u
+#define EMRTD_TEST_HINT_LINES    3u
+
+/** Hold one heading and its hint to the screen, and say which one when not. */
+static void check_error_fits(int code, const char* text, const char* hint) {
+    emrtd_test_checks++;
+    if(text == NULL || text[0] == '\0' || strchr(text, '\n') != NULL) {
+        emrtd_test_fail(__FILE__, __LINE__, "error %d: the heading is not one line", code);
+        return;
+    }
+    const unsigned text_width = emrtd_test_font_advance(EmrtdTestFontPrimary, text, strlen(text));
+    if(text_width > EMRTD_TEST_HEADING_WIDTH) {
+        emrtd_test_fail(
+            __FILE__,
+            __LINE__,
+            "error %d: \"%s\" is %u px wide, the heading has %u",
+            code,
+            text,
+            text_width,
+            EMRTD_TEST_HEADING_WIDTH);
+    }
+
+    emrtd_test_checks++;
+    if(hint == NULL || hint[0] == '\0') {
+        emrtd_test_fail(__FILE__, __LINE__, "error %d (%s): the hint is empty", code, text);
+        return;
+    }
+    unsigned lines = 0;
+    for(const char* line = hint; line != NULL;) {
+        const char* end = strchr(line, '\n');
+        const size_t len = end != NULL ? (size_t)(end - line) : strlen(line);
+        lines++;
+
+        if(len == 0 || line[0] == ' ' || line[len - 1] == ' ') {
+            emrtd_test_fail(
+                __FILE__,
+                __LINE__,
+                "error %d (%s): hint line %u is empty or padded with a space",
+                code,
+                text,
+                lines);
+        }
+        const unsigned width = emrtd_test_font_advance(EmrtdTestFontSecondary, line, len);
+        if(width > EMRTD_TEST_HINT_WIDTH) {
+            emrtd_test_fail(
+                __FILE__,
+                __LINE__,
+                "error %d (%s): hint line %u \"%.*s\" is %u px wide, a line has %u",
+                code,
+                text,
+                lines,
+                (int)len,
+                line,
+                width,
+                EMRTD_TEST_HINT_WIDTH);
+        }
+        line = end != NULL ? end + 1 : NULL;
+    }
+    if(lines > EMRTD_TEST_HINT_LINES) {
+        emrtd_test_fail(
+            __FILE__,
+            __LINE__,
+            "error %d (%s): the hint has %u lines, the screen shows %u",
+            code,
+            text,
+            lines,
+            EMRTD_TEST_HINT_LINES);
+    }
+}
+
 static void test_error_text(void) {
-    emrtd_test_begin("every error says something, and says it in one line");
+    emrtd_test_begin("every error fits the screen, heading and hint");
 
     for(int code = 0; code < EmrtdErrorCount; code++) {
         const char* text = emrtd_error_text((EmrtdError)code);
         const char* hint = emrtd_error_hint((EmrtdError)code);
 
-        TEST_CHECK(text != NULL && text[0] != '\0');
-        TEST_CHECK(hint != NULL && hint[0] != '\0');
-        /* The heading has one line of a four line screen. */
-        TEST_CHECK(strlen(text) <= 40);
+        check_error_fits(code, text, hint);
         /* A hint that says no more than the heading is not a hint. */
-        TEST_CHECK(strlen(hint) > strlen(text));
+        TEST_CHECK(hint != NULL && text != NULL && strlen(hint) > strlen(text));
     }
+    /* The words for a code outside the table are shown on the same screen. */
+    check_error_fits(
+        EmrtdErrorCount, emrtd_error_text(EmrtdErrorCount), emrtd_error_hint(EmrtdErrorCount));
+
+    emrtd_test_begin("the budget itself catches a line that is too wide");
+    /* 21 capital W in FontSecondary is 168 px; a check that passed this would
+     * be comparing nothing. */
+    TEST_CHECK(
+        emrtd_test_font_advance(EmrtdTestFontSecondary, "WWWWWWWWWWWWWWWWWWWWW", 21) >
+        EMRTD_TEST_HINT_WIDTH);
+    TEST_EQ_INT(emrtd_test_font_advance(EmrtdTestFontPrimary, "No error", 8), 41);
 
     emrtd_test_begin("the hint for a wrong key tells the user what to do");
     const char* hint = emrtd_error_hint(EmrtdErrorWrongKey);
+    /* The number goes in without its check digit, and the values it points at
+     * are the ones the error screen reads back under it. Where they come from,
+     * the zone or a card access number, is said there, where there is room. */
     TEST_CHECK(strstr(hint, "check digit") != NULL);
-    /* It has to name where the values are read off, and an identity card has
-     * no data page: the zone and the card access number are what it points at
-     * instead. */
-    TEST_CHECK(strstr(hint, "machine readable zone") != NULL);
-    TEST_CHECK(strstr(hint, "card access number") != NULL);
+    TEST_CHECK(strstr(hint, "number") != NULL);
+    TEST_CHECK(strstr(hint, "dates") != NULL);
 
     emrtd_test_begin("a platform limit is named as one, not blamed on the document");
     TEST_CHECK(strstr(emrtd_error_hint(EmrtdErrorPaceUnsupportedDh), "mbed TLS") != NULL);

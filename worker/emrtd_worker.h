@@ -147,6 +147,9 @@ typedef struct {
 /**
  * Where a read that failed had got to, in one sentence, or NULL.
  *
+ * The sentence is broken into lines with '\n' by the same rule as
+ * emrtd_error_hint(), because it is shown under the hint on the error screen.
+ *
  * The error says what went wrong and this says when, and the two together are
  * what tells a chip that went quiet while it computed PACE from one that went
  * quiet half way through DG2. Static; safe from any thread.

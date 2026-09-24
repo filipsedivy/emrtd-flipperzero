@@ -6,8 +6,8 @@
  *
  * The reader runs unattended on a device with a four line screen, so an error
  * has to say what went wrong in words the person holding the document can act
- * on. emrtd_error_text() returns exactly that; emrtd_error_detail() adds the
- * value that made it fail, where there is one.
+ * on. emrtd_error_text() is the heading that says what happened, and
+ * emrtd_error_hint() the three lines under it that say what to try.
  */
 #pragma once
 
@@ -61,13 +61,19 @@ typedef enum {
     EmrtdErrorCount,
 } EmrtdError;
 
-/** A short line for the screen, at most about forty characters. */
+/**
+ * The heading: one line that fits the screen in FontPrimary, at most 124 px of
+ * glyph advances, which is about twenty characters.
+ */
 const char* emrtd_error_text(EmrtdError error);
 
 /**
- * A longer explanation, including what to try next.
+ * What to try next, already broken into at most three lines with '\n'.
  *
- * Shown on the error scene under the heading.
+ * Each line stays within 120 px of FontSecondary, so neither the error scene
+ * nor the saved report's text box has to break one in the middle of a word.
+ * Shown on the error scene under the heading; the background behind it is in
+ * docs/troubleshooting.md.
  */
 const char* emrtd_error_hint(EmrtdError error);
 

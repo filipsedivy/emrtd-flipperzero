@@ -164,7 +164,7 @@ number of rounds.
   while it computes.
   Radio code `7` is a timeout, `1` an answer that arrived damaged - the
   firmware names that one "not present" - and `6` a bad CRC. This reader
-  reports `7` and `1` alike as "The document moved away", which is why the
+  reports `7` and `1` alike as "Document moved away", which is why the
   codes are worth having.
 - **A read that never gets that far.** `# card` carries the frame size and the
   waiting time the reader armed, and `# error stage=exchange` carries what the

@@ -182,8 +182,9 @@ is written not to hold a file:
 ## Errors
 
 One enumeration, `EmrtdError`, crosses every layer, and each value has a line
-for the screen (`emrtd_error_text`) and a longer explanation of what to try
-(`emrtd_error_hint`). A status word that is not 9000 is mapped to the closest
+for the screen (`emrtd_error_text`) and a three line hint of what to try
+(`emrtd_error_hint`), both measured against the screen's fonts by the host
+tests. A status word that is not 9000 is mapped to the closest
 value by `emrtd_error_from_sw()` and kept alongside its own text, so a
 failure can name both the layer that noticed and the byte that caused it.
 [troubleshooting.md](troubleshooting.md) is the same table, written out.

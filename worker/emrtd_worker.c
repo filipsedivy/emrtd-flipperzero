@@ -211,21 +211,21 @@ const char* emrtd_worker_stopped_text(const EmrtdReadResult* result) {
     }
     switch(result->error_stage) {
     case EmrtdWorkerStageWaitingForCard:
-        return "It stopped before the chip would open a session.";
+        return "It stopped before the chip\nwould open a session.";
     case EmrtdWorkerStageSelectingApplication:
-        return "It stopped while opening the document, before anything was read.";
+        return "It stopped while opening\nthe document, before\nanything was read.";
     case EmrtdWorkerStageReadingCardAccess:
-        return "It stopped while reading EF.CardAccess, before authenticating.";
+        return "It stopped reading\nEF.CardAccess, before\nauthenticating.";
     case EmrtdWorkerStageAuthenticating:
         /*
          * The stage is reported once more after a driver succeeds, so the
          * flag is what says which side of the session the read stopped on.
          */
         return result->authenticated ?
-                   "It stopped just after the secure session opened." :
-                   "It stopped while authenticating, before any file was read.";
+                   "It stopped just after the\nsecure session opened." :
+                   "It stopped while\nauthenticating, before\nany file was read.";
     case EmrtdWorkerStageReadingFile:
-        return "It stopped while reading the files.";
+        return "It stopped while reading\nthe files.";
     default:
         return NULL;
     }

@@ -23,10 +23,15 @@ static void
     }
 }
 
-/** True when the credentials are the first thing to suspect. */
+/**
+ * True when the credentials are the first thing to suspect: the two verdicts
+ * on the key the worker itself treats as final, and credentials that are not
+ * there at all. A chip that announces no PACE is not one of them - its hint
+ * points at Options, and the values would only be a distraction.
+ */
 static bool emrtd_scene_read_error_blames_key(EmrtdError error) {
-    return error == EmrtdErrorWrongKey || error == EmrtdErrorInvalidInput ||
-           error == EmrtdErrorNoAccessMethod;
+    return error == EmrtdErrorWrongKey || error == EmrtdErrorPaceFailed ||
+           error == EmrtdErrorInvalidInput;
 }
 
 void emrtd_scene_read_error_on_enter(void* context) {
@@ -50,7 +55,7 @@ void emrtd_scene_read_error_on_enter(void* context) {
 
         furi_string_cat_printf(
             body,
-            "\n\n\e#Read back what was used\nNumber: %s\nBorn: %s\nExpires: %s",
+            "\n\n\e#Values used\nNumber: %s\nBorn: %s\nExpires: %s",
             credentials->document_number[0] != '\0' ? credentials->document_number : "not set",
             credentials->date_of_birth[0] != '\0' ? birth : "not set",
             credentials->date_of_expiry[0] != '\0' ? expiry : "not set");
@@ -63,7 +68,12 @@ void emrtd_scene_read_error_on_enter(void* context) {
             furi_string_cat_str(
                 body, "\n\nPACE uses the CAN alone;\nBAC has no key but the\nthree values above.");
         } else {
-            furi_string_cat_str(body, "\n\nAll three come from the\nmachine readable zone.");
+            /* The card access number, where a document prints one, is the
+             * easier way in: one value to type, and no check digit. */
+            furi_string_cat_str(
+                body,
+                "\n\nAll three come from the\nMRZ, the lines with <<<.\n"
+                "If the document prints a\nCAN, it replaces all three.");
         }
     }
 
@@ -102,7 +112,13 @@ void emrtd_scene_read_error_on_enter(void* context) {
 
     widget_add_string_element(
         widget, 64, 1, AlignCenter, AlignTop, FontPrimary, emrtd_error_text(error));
-    widget_add_text_scroll_element(widget, 0, 13, 128, 36, furi_string_get_cstr(body));
+    /*
+     * 34 rather than 36: the scroll element draws a line while its descender
+     * still fits, so at 36 a fourth line starts at y=46 and runs into the
+     * buttons, which begin at y=52. At 34 exactly three lines show, and the
+     * number of scroll steps is the same.
+     */
+    widget_add_text_scroll_element(widget, 0, 13, 128, 34, furi_string_get_cstr(body));
     widget_add_button_element(
         widget, GuiButtonTypeLeft, "Retry", emrtd_scene_read_error_button_callback, app);
 

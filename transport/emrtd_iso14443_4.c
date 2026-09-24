@@ -293,8 +293,8 @@ void emrtd_iso14443_4_failure_detail(
     /*
      * The mapped error says what it meant for the read; the radio codes say
      * what actually happened on each attempt, and the two are not the same
-     * question. A timeout and an internal fault both arrive as "the document
-     * moved away", and three identical timeouts mean something different from
+     * question. A timeout and an internal fault both arrive as "Document moved
+     * away", and three identical timeouts mean something different from
      * three different faults.
      */
     size_t pos = (size_t)snprintf(out, out_size, "%s, radio", emrtd_error_text(error));
@@ -343,7 +343,7 @@ void emrtd_iso14443_4_set_trace(
  *
  * A timeout is the honest "the chip went quiet" signal; everything else is a
  * fault of the link rather than a statement about the document, and saying so
- * keeps "the document moved away" for the case that really is that.
+ * keeps "Document moved away" for the case that really is that.
  */
 static EmrtdError emrtd_iso14443_4_map_error_3a(Iso14443_3aError error) {
     switch(error) {
