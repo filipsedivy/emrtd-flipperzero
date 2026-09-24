@@ -35,6 +35,11 @@ and `currentColor` there is black.
 All four are generated from the one grid definition in the script, which checks
 the size, the bit depth and the absence of metadata after it writes each file.
 
+One image in `images/` is not the mark: `EmrtdDonateQr_58x58.png`, the QR code
+the Donate screen draws, is encoded from the README's Support link by
+[assets/make_donate_qr.py](../assets/make_donate_qr.py), which reads the code
+back after it writes it.
+
 ## Why an unused icon costs something
 
 `fbt` compiles every image in `images/` into `emrtd_icons.h` and does not strip

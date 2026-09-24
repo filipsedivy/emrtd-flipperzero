@@ -8,7 +8,7 @@ Flipper, and neither knows that a user interface exists. That is what lets
 it against the published ICAO test vectors without a device in reach.
 
 ```
-  scenes/            twenty one scenes, one file each
+  scenes/            twenty three scenes, one file each
   views/             the two views the stock module set does not provide
      |
   worker/            the read state machine, on the NFC thread; the export

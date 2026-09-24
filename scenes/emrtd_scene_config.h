@@ -19,6 +19,7 @@
  *            │            └─ ForgetConfirm ── ForgetDone
  *            ├─ Options ── DataGroups
  *            ├─ Saved ──── SavedDetail
+ *            ├─ Donate
  *            └─ About
  */
 
@@ -43,4 +44,5 @@ ADD_SCENE(emrtd, result_file_detail, ResultFileDetail)
 ADD_SCENE(emrtd, result_photo, ResultPhoto)
 ADD_SCENE(emrtd, saved, Saved)
 ADD_SCENE(emrtd, saved_detail, SavedDetail)
+ADD_SCENE(emrtd, donate, Donate)
 ADD_SCENE(emrtd, about, About)

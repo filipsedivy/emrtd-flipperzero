@@ -86,13 +86,15 @@ The images the firmware compiles into the application are generated:
 
 ```bash
 uv run --with pillow python assets/make_logo.py
+uv run --with segno --with pillow --with zxing-cpp python assets/make_donate_qr.py
 ```
 
 `images/emrtd_10px.png` must stay exactly 10x10 and one bit, because that is
 what `fap_icon` accepts. Every other image in `images/` has to be one bit and
 free of metadata as well, or `ufbt lint` rejects it - and `fbt` does not strip
 an icon that nothing draws, so an image is added only when something uses it.
-The generator checks all of this after it writes each file.
+Both generators check the size and the bit depth of each file they write; the
+QR code generator also checks for metadata, and reads the code back.
 [docs/branding.md](docs/branding.md) says why the mark is shaped the way it is.
 
 ## Documents and data

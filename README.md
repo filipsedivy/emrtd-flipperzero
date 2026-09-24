@@ -141,7 +141,8 @@ export is subject to the rules that apply where you are.
 
 The work behind this is a chip, a specification and a lot of measuring. If it
 saved you some of that, you can buy me a coffee:
-[buymeacoffee.com/filipsedivy](https://buymeacoffee.com/filipsedivy).
+[buymeacoffee.com/filipsedivy](https://buymeacoffee.com/filipsedivy). The same
+link is in the application's menu under Donate, as a QR code.
 
 ## License
 

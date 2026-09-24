@@ -172,6 +172,17 @@ static void emrtd_free(Emrtd* app) {
     furi_assert(app);
 
     /*
+     * Back out of the start scene empties the stack before the dispatcher
+     * stops, and then this does nothing. A signal from outside - loader close,
+     * which ufbt launch sends before every upload - stops the dispatcher with
+     * a scene still on top, and its on_exit would never run: the LED would
+     * keep blinking, the backlight Donate holds on would stay held for the
+     * whole device, and the keys screen would leave its hex in the heap. It
+     * has to run first, while every view it resets still exists.
+     */
+    scene_manager_stop(app->scene_manager);
+
+    /*
      * A scene normally tears the read down in its on_exit handler. Doing it
      * again here costs nothing and guarantees that neither the poller thread
      * nor the NFC hardware lock outlives the application, whichever way the

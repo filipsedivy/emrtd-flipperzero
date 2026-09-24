@@ -16,6 +16,7 @@ typedef enum {
     EmrtdSceneStartIndexDocument,
     EmrtdSceneStartIndexOptions,
     EmrtdSceneStartIndexSaved,
+    EmrtdSceneStartIndexDonate,
     EmrtdSceneStartIndexAbout,
 } EmrtdSceneStartIndex;
 
@@ -58,6 +59,8 @@ void emrtd_scene_start_on_enter(void* context) {
     submenu_add_item(
         submenu, "Saved reads", EmrtdSceneStartIndexSaved, emrtd_scene_start_submenu_callback, app);
     submenu_add_item(
+        submenu, "Donate", EmrtdSceneStartIndexDonate, emrtd_scene_start_submenu_callback, app);
+    submenu_add_item(
         submenu, "About", EmrtdSceneStartIndexAbout, emrtd_scene_start_submenu_callback, app);
 
     submenu_set_selected_item(
@@ -94,6 +97,9 @@ bool emrtd_scene_start_on_event(void* context, SceneManagerEvent event) {
             break;
         case EmrtdSceneStartIndexSaved:
             scene_manager_next_scene(app->scene_manager, EmrtdSceneSaved);
+            break;
+        case EmrtdSceneStartIndexDonate:
+            scene_manager_next_scene(app->scene_manager, EmrtdSceneDonate);
             break;
         case EmrtdSceneStartIndexAbout:
             scene_manager_next_scene(app->scene_manager, EmrtdSceneAbout);

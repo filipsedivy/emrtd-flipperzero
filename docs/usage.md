@@ -48,6 +48,7 @@ Start ─┬─ Read ──── Read ─┬─ ReadSuccess ── Result ─�
        │            └─ ForgetConfirm
        ├─ Options ── DataGroups
        ├─ Saved ──── SavedDetail
+       ├─ Donate
        └─ About
 ```
 
@@ -163,6 +164,13 @@ The reads already on the card. It opens the Flipper's file browser at
 Deleting an export is not done from here: use the Flipper's own file manager,
 or take the SD card out. That is deliberate - a screen that can erase an
 identity with one press is a screen that will do it by accident.
+
+### Donate
+
+Where to buy me a coffee: the address, and a QR code that carries it, for a
+phone camera to open without anybody typing it. The backlight stays on while
+the screen is open, so it does not switch off while the camera is still
+focusing.
 
 ## Where things land
 
