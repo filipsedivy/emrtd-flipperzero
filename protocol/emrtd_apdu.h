@@ -71,6 +71,10 @@ extern const uint8_t EMRTD_AID[7];
 
 void emrtd_apdu_select_application(EmrtdCommandApdu* out, const uint8_t* aid, size_t aid_len);
 void emrtd_apdu_select_file(EmrtdCommandApdu* out, uint8_t fid[2]);
+/* SELECT the master file (3F00). EF.CardAccess lives there, so it has to be
+ * reachable from the application context on documents that hide a same-id file
+ * inside their eMRTD application (e.g. national eID cards). ICAO 9303-11 9.2. */
+void emrtd_apdu_select_master_file(EmrtdCommandApdu* out);
 void emrtd_apdu_get_challenge(EmrtdCommandApdu* out);
 void emrtd_apdu_external_authenticate(EmrtdCommandApdu* out, const uint8_t* data, size_t len);
 /**

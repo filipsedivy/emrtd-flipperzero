@@ -1360,6 +1360,24 @@ static size_t
     const EmrtdFileInfo* info = &emrtd_worker_card_access_info;
 
     uint16_t sw = 0;
+
+    /*
+     * EF.CardAccess lives in the master file, not in the eMRTD application.
+     * Some documents - national eID cards among them - hide a file with the
+     * same identifier inside the application and refuse it there (6982), so
+     * the master file is selected explicitly first. A chip that will not take
+     * an explicit MF select is read exactly as before. ICAO 9303-11 9.2.
+     */
+    {
+        EmrtdCommandApdu select_mf;
+        emrtd_apdu_select_master_file(&select_mf);
+        if(emrtd_worker_tracing(worker)) {
+            emrtd_export_trace_note(worker->export_ctx, "# select target=master-file fid=3F00");
+        }
+        EmrtdResponseApdu mf_response;
+        (void)emrtd_worker_transmit(worker, &select_mf, &mf_response);
+    }
+
     const EmrtdError select = emrtd_worker_select_file(worker, info, &sw);
     if(select != EmrtdErrorNone) {
         /* The exchange failed, so there is no status word to report. */

@@ -158,6 +158,16 @@ void emrtd_apdu_select_file(EmrtdCommandApdu* out, uint8_t fid[2]) {
     emrtd_apdu_init(out, 0x00, 0xA4, 0x02, 0x0C, fid, 2, EMRTD_LE_NONE);
 }
 
+void emrtd_apdu_select_master_file(EmrtdCommandApdu* out) {
+    if(out == NULL) {
+        return;
+    }
+    /* P1 = 00 with the 3F00 identifier selects the master file; P2 = 0C asks
+     * for no response data. ISO/IEC 7816-4. */
+    static const uint8_t mf[2] = {0x3F, 0x00};
+    emrtd_apdu_init(out, 0x00, 0xA4, 0x00, 0x0C, mf, 2, EMRTD_LE_NONE);
+}
+
 void emrtd_apdu_get_challenge(EmrtdCommandApdu* out) {
     if(out == NULL) {
         return;
